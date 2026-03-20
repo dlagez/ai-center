@@ -1,0 +1,16 @@
+# Core Dependencies
+langchain==0.3.11
+langgraph==0.2.30
+langsmith==0.1.79
+langchain-openai==0.1.8
+
+# LLM & Embedding Providers
+openai==1.42.0
+
+# Data Processing
+pandas==2.2.3
+numpy==1.26.4
+
+# Web Framework
+fastapi==0.110.3
+uvicorn==0.27.0
