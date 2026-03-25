@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.core.config import OCRSettings
+from app.modules.document_center.schemas import DocumentParseRequest
+from app.modules.document_center.services import (
+    DocumentParseService,
+    build_document_parse_service,
+)
 from app.runtime.tools import OCRTool, OCRToolRequest, OCRToolResult, ToolExecutor
 from app.runtime.tools.ocr_tool import build_default_tool_executor
 
@@ -24,9 +29,11 @@ class DocumentOCRService:
         executor: ToolExecutor,
         *,
         tool_name: str = OCRTool.name,
+        document_parse_service: DocumentParseService | None = None,
     ) -> None:
         self._executor = executor
         self._tool_name = tool_name
+        self._document_parse_service = document_parse_service
 
     def should_run_ocr(
         self,
@@ -53,6 +60,33 @@ class DocumentOCRService:
         provider: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> OCRToolResult:
+        if self._document_parse_service is not None:
+            parse_request = DocumentParseRequest(
+                tenant_id=tenant_id,
+                app_id=app_id,
+                scene=scene,
+                source_type=source_type,
+                source_value=source_value,
+                file_type=file_type,
+                provider=provider,
+                metadata=dict(metadata or {}),
+            )
+            result = self._document_parse_service.parse(parse_request)
+            usage = result.metadata.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            return OCRToolResult(
+                trace_id=result.trace_id,
+                provider=result.provider or result.parser_name,
+                model=result.model,
+                source_type=result.source_type,
+                source_value=result.source_value,
+                text=result.text,
+                pages=result.pages,
+                usage=usage,
+                latency_ms=result.latency_ms,
+                raw_response=result.raw_response,
+            )
+
         request = OCRToolRequest(
             tenant_id=tenant_id,
             app_id=app_id,
@@ -97,4 +131,8 @@ def build_document_ocr_service(
     executor: ToolExecutor | None = None,
 ) -> DocumentOCRService:
     executor = executor or build_default_tool_executor(settings)
-    return DocumentOCRService(executor)
+    document_parse_service = build_document_parse_service(ocr_settings=settings)
+    return DocumentOCRService(
+        executor,
+        document_parse_service=document_parse_service,
+    )

@@ -14,7 +14,13 @@ from app.core.exceptions import (
 from app.integrations.ocr_providers.aliyun_ocr_adapter import AliyunOCRAdapter
 from app.integrations.ocr_providers.base import BaseOCRProviderAdapter
 from app.integrations.ocr_providers.internal_ocr_adapter import InternalOCRAdapter
+from app.modules.document_center.schemas import DocumentParseRequest
+from app.modules.document_center.services import (
+    DocumentParseService,
+    build_document_parse_service,
+)
 from app.runtime.tools.base import BaseRuntimeTool
+from app.runtime.tools.document_parse_tool import DocumentParseTool
 from app.runtime.tools.executor import ToolExecutor
 from app.runtime.tools.registry import ToolRegistry
 from app.runtime.tools.schemas import OCRProviderResponse, OCRToolRequest, OCRToolResult
@@ -42,13 +48,21 @@ class OCRTool(BaseRuntimeTool):
         *,
         settings: OCRSettings,
         adapters: dict[str, BaseOCRProviderAdapter],
+        document_parse_service: DocumentParseService | None = None,
     ) -> None:
         self._settings = settings
         self._adapters = adapters
+        self._document_parse_service = document_parse_service
 
     def execute(self, request: OCRToolRequest) -> OCRToolResult:
         normalized_request = self._normalize_request(request)
-        provider_name = normalized_request.provider or self._settings.ocr_default_provider
+        if self._document_parse_service is not None:
+            return self._execute_with_document_parse(normalized_request)
+
+        return self._execute_with_provider(normalized_request)
+
+    def _execute_with_provider(self, request: OCRToolRequest) -> OCRToolResult:
+        provider_name = request.provider or self._settings.ocr_default_provider
         adapter = self._adapters.get(provider_name)
         if adapter is None:
             raise OCRToolConfigurationError(
@@ -57,13 +71,43 @@ class OCRTool(BaseRuntimeTool):
 
         trace_id = uuid.uuid4().hex
         start_time = time.perf_counter()
-        response = adapter.extract_text(normalized_request, trace_id=trace_id)
+        response = adapter.extract_text(request, trace_id=trace_id)
         latency_ms = int((time.perf_counter() - start_time) * 1000)
         return self._build_result(
             trace_id=trace_id,
-            request=normalized_request,
+            request=request,
             response=response,
             latency_ms=latency_ms,
+        )
+
+    def _execute_with_document_parse(self, request: OCRToolRequest) -> OCRToolResult:
+        parse_request = DocumentParseRequest(
+            tenant_id=request.tenant_id,
+            app_id=request.app_id,
+            scene=request.scene,
+            source_type=request.source_type,
+            source_value=request.source_value,
+            file_type=request.file_type,
+            provider=request.provider,
+            language_hints=list(request.language_hints),
+            enable_layout=request.enable_layout,
+            page_range=request.page_range,
+            metadata=dict(request.metadata),
+        )
+        result = self._document_parse_service.parse(parse_request)
+        usage = result.metadata.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        return OCRToolResult(
+            trace_id=result.trace_id,
+            provider=result.provider or result.parser_name,
+            model=result.model,
+            source_type=result.source_type,
+            source_value=result.source_value,
+            text=result.text,
+            pages=result.pages,
+            usage=usage,
+            latency_ms=result.latency_ms,
+            raw_response=result.raw_response,
         )
 
     def _normalize_request(self, request: OCRToolRequest) -> OCRToolRequest:
@@ -156,11 +200,19 @@ def build_default_tool_registry(
 ) -> ToolRegistry:
     settings = settings or OCRSettings.from_env()
     registry = registry or ToolRegistry()
+    adapters = adapters or build_default_ocr_adapters(settings)
+    document_parse_service = build_document_parse_service(
+        ocr_settings=settings,
+        adapters=adapters,
+    )
+    if not registry.has(DocumentParseTool.name):
+        registry.register(DocumentParseTool(document_parse_service))
     if not registry.has(OCRTool.name):
         registry.register(
             OCRTool(
                 settings=settings,
-                adapters=adapters or build_default_ocr_adapters(settings),
+                adapters=adapters,
+                document_parse_service=document_parse_service,
             )
         )
     return registry

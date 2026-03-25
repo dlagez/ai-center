@@ -131,3 +131,29 @@ class OCRSettings:
             internal_ocr_base_url=_get_optional("INTERNAL_OCR_BASE_URL"),
             internal_ocr_api_key=_get_optional("INTERNAL_OCR_API_KEY"),
         )
+
+
+@dataclass(frozen=True)
+class DocumentParseSettings:
+    document_parse_cache_dir: str
+    document_parse_enable_cache: bool
+    document_parse_download_timeout_ms: int
+
+    @classmethod
+    def from_env(cls) -> "DocumentParseSettings":
+        project_root = Path(__file__).resolve().parents[2]
+        raw_cache_dir = os.getenv(
+            "DOCUMENT_PARSE_CACHE_DIR",
+            str(project_root / "data" / "document_parse_cache"),
+        )
+        cache_dir = Path(raw_cache_dir)
+        if not cache_dir.is_absolute():
+            cache_dir = project_root / cache_dir
+
+        return cls(
+            document_parse_cache_dir=str(cache_dir),
+            document_parse_enable_cache=_get_bool("DOCUMENT_PARSE_ENABLE_CACHE", True),
+            document_parse_download_timeout_ms=_get_int(
+                "DOCUMENT_PARSE_DOWNLOAD_TIMEOUT_MS", 60000
+            ),
+        )

@@ -1,6 +1,7 @@
 """Runtime tool abstractions and executors."""
 
 __all__ = [
+    "DocumentParseTool",
     "OCRLine",
     "OCRPage",
     "OCRProviderResponse",
@@ -48,11 +49,13 @@ def __getattr__(name: str):
         }
         return exports[name]
     if name in {
+        "DocumentParseTool",
         "OCRTool",
         "build_default_ocr_adapters",
         "build_default_tool_executor",
         "build_default_tool_registry",
     }:
+        from app.runtime.tools.document_parse_tool import DocumentParseTool
         from app.runtime.tools.ocr_tool import (
             OCRTool,
             build_default_ocr_adapters,
@@ -61,6 +64,7 @@ def __getattr__(name: str):
         )
 
         exports = {
+            "DocumentParseTool": DocumentParseTool,
             "OCRTool": OCRTool,
             "build_default_ocr_adapters": build_default_ocr_adapters,
             "build_default_tool_executor": build_default_tool_executor,

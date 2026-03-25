@@ -94,3 +94,33 @@ class OCRToolUnsupportedFileTypeError(OCRToolError):
 
 class OCRToolNotFoundError(OCRToolError):
     code = "ocr_tool_not_found"
+
+
+class DocumentParseError(Exception):
+    code = "document_parse_unknown_error"
+    retryable = False
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class DocumentParseConfigurationError(DocumentParseError):
+    code = "document_parse_configuration_error"
+
+
+class DocumentParseValidationError(DocumentParseError):
+    code = "document_parse_validation_error"
+
+
+class DocumentParseUnsupportedFileTypeError(DocumentParseError):
+    code = "document_parse_unsupported_file_type"
+
+
+class DocumentParseBadResponseError(DocumentParseError):
+    code = "document_parse_bad_response_error"
+
+
+class DocumentParseCacheError(DocumentParseError):
+    code = "document_parse_cache_error"
