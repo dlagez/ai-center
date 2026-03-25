@@ -45,3 +45,52 @@ class ModelGatewayProviderUnavailableError(ModelGatewayError):
 class ModelGatewayBadResponseError(ModelGatewayError):
     code = "bad_response_error"
     retryable = True
+
+
+class OCRToolError(Exception):
+    code = "ocr_unknown_error"
+    retryable = False
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class OCRToolConfigurationError(OCRToolError):
+    code = "ocr_configuration_error"
+
+
+class OCRToolValidationError(OCRToolError):
+    code = "ocr_validation_error"
+
+
+class OCRToolAuthenticationError(OCRToolError):
+    code = "ocr_authentication_error"
+
+
+class OCRToolPermissionError(OCRToolError):
+    code = "ocr_permission_error"
+
+
+class OCRToolTimeoutError(OCRToolError):
+    code = "ocr_timeout_error"
+    retryable = True
+
+
+class OCRToolProviderUnavailableError(OCRToolError):
+    code = "ocr_provider_unavailable"
+    retryable = True
+
+
+class OCRToolBadResponseError(OCRToolError):
+    code = "ocr_bad_response_error"
+    retryable = True
+
+
+class OCRToolUnsupportedFileTypeError(OCRToolError):
+    code = "ocr_unsupported_file_type"
+
+
+class OCRToolNotFoundError(OCRToolError):
+    code = "ocr_tool_not_found"

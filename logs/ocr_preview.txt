@@ -1,0 +1,19 @@
+## 1 生态介绍
+
+可以把  $ \uwave{\text{LangChain}} $ 生态理解成一套围绕 AI Agent 开发的“组件层 + 编排层 + 观测评估层”体系，而不是单一框架。
+
+最核心的三层是：
+
+1.  $ \underline{\text{LangChain}} $：偏上层的应用开发框架，负责模型调用、提示词、工具、检索、输出结构化等通用组件；官方也明确说， $ \underline{\text{LangChain}} $适合快速构建 agent 和 autonomous application，并且它的 agents 是构建在  $ \underline{\text{LangGraph}} $ 之上的。(  $ \underline{\text{LangChain Docs}} $ )
+
+2. LangGraph: 偏底层的 agent orchestration/runtime, 适合构建长运行、有状态、可恢复、可插人工干预的复杂 agent 系统。官方把它定义为 low-level orchestration framework and runtime, 强调 durable execution、streaming、human-in-the-loop、memory。(LangChain Docs)
+
+3.  $ \underline{\text{LangSmith}} $：负责 trace、观测、评估、部署流程管理。官方说明它把  $ \underline{\text{observability}} $、evaluation、deployment、platform setup 串成一个从本地开发到生产的一体化流程。(  $ \underline{\text{LangChain Docs}} $)
+
+所以，站在工程视角看：
+
+LangChain 解决"怎么接模型、接工具、接检索、接提示词"
+
+☑ LangGraph 解决"怎么把一个 agent 跑成稳定的业务流程"
+
+LangSmith 解决"怎么调试、评估、监控、上线"
