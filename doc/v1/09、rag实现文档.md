@@ -670,3 +670,53 @@ V1 默认可以直接使用：
 - 代码改动面最小
 - 边界最清晰
 - 最容易先跑通，再逐步演进到更复杂的 RAG 形态
+
+---
+
+## 17. Qdrant Local Mode 补充
+
+当前实现补充支持 Qdrant SDK 本地模式，目的是让开发环境和最小 smoke 环境不再依赖单独启动 Qdrant 服务。
+
+### 17.1 开发配置建议
+
+```env
+VECTOR_STORE_PROVIDER=qdrant
+QDRANT_LOCAL_MODE=true
+QDRANT_LOCAL_PATH=data/qdrant_local
+```
+
+在这个模式下：
+
+- 应用仍然走统一的 `VectorStoreService`
+- 适配器内部使用 `QdrantClient(path=...)`
+- 数据会持久化到项目目录下的 `data/qdrant_local`
+
+### 17.2 适用范围
+
+推荐用于：
+
+- 本地开发
+- Demo 演示
+- 端到端最小验证
+- 单机 smoke 测试
+
+不建议直接作为生产默认方案，生产环境仍建议：
+
+```env
+QDRANT_LOCAL_MODE=false
+QDRANT_URL=http://<your-qdrant-host>:6333
+QDRANT_API_KEY=
+```
+
+### 17.3 对 RAG 链路的影响
+
+Qdrant Local Mode 不改变 RAG 主链路：
+
+```text
+parse_and_chunk -> embedding -> vector upsert -> retrieval -> llm answer
+```
+
+它只改变向量存储的运行方式：
+
+- 开发环境：Qdrant SDK 本地模式
+- 生产环境：外部 Qdrant Server / Cloud

@@ -271,6 +271,13 @@ class VectorStoreSettings:
     vector_store_default_metric: str
     vector_store_collection_prefix: str
     vector_store_local_dir: str
+    qdrant_local_mode: bool = False
+    qdrant_local_path: str | None = None
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+    qdrant_grpc_port: int = 6334
+    qdrant_prefer_grpc: bool = False
+    qdrant_https: bool = False
 
     @classmethod
     def from_env(cls) -> "VectorStoreSettings":
@@ -283,8 +290,16 @@ class VectorStoreSettings:
         if not local_dir.is_absolute():
             local_dir = project_root / local_dir
 
+        raw_qdrant_local_path = os.getenv(
+            "QDRANT_LOCAL_PATH",
+            str(project_root / "data" / "qdrant_local"),
+        )
+        qdrant_local_path = Path(raw_qdrant_local_path)
+        if not qdrant_local_path.is_absolute():
+            qdrant_local_path = project_root / qdrant_local_path
+
         return cls(
-            vector_store_provider=os.getenv("VECTOR_STORE_PROVIDER", "local_file"),
+            vector_store_provider=os.getenv("VECTOR_STORE_PROVIDER", "qdrant"),
             vector_store_timeout_ms=_get_int("VECTOR_STORE_TIMEOUT_MS", 60000),
             vector_store_default_metric=os.getenv(
                 "VECTOR_STORE_DEFAULT_METRIC", "cosine"
@@ -293,4 +308,11 @@ class VectorStoreSettings:
                 "VECTOR_STORE_COLLECTION_PREFIX", "kb_"
             ),
             vector_store_local_dir=str(local_dir),
+            qdrant_local_mode=_get_bool("QDRANT_LOCAL_MODE", False),
+            qdrant_local_path=str(qdrant_local_path),
+            qdrant_url=_get_optional("QDRANT_URL") or "http://localhost:6333",
+            qdrant_api_key=_get_optional("QDRANT_API_KEY"),
+            qdrant_grpc_port=_get_int("QDRANT_GRPC_PORT", 6334),
+            qdrant_prefer_grpc=_get_bool("QDRANT_PREFER_GRPC", False),
+            qdrant_https=_get_bool("QDRANT_HTTPS", False),
         )

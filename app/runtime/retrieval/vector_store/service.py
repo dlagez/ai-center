@@ -12,10 +12,9 @@ from app.core.exceptions import (
     VectorStoreUnknownError,
     VectorStoreValidationError,
 )
-from app.integrations.vector_stores import (
-    BaseVectorStoreAdapter,
-    LocalFileVectorStoreAdapter,
-)
+from app.integrations.vector_stores.base import BaseVectorStoreAdapter
+from app.integrations.vector_stores.local_file_adapter import LocalFileVectorStoreAdapter
+from app.integrations.vector_stores.qdrant_adapter import QdrantVectorStoreAdapter
 from app.observability.metrics.vector_store_call_recorder import (
     InMemoryVectorStoreCallRecorder,
 )
@@ -53,7 +52,8 @@ class VectorStoreService:
     ) -> None:
         self._settings = settings or VectorStoreSettings.from_env()
         self._adapters = adapters or {
-            "local_file": LocalFileVectorStoreAdapter(self._settings)
+            "qdrant": QdrantVectorStoreAdapter(self._settings),
+            "local_file": LocalFileVectorStoreAdapter(self._settings),
         }
         self._recorder = recorder or InMemoryVectorStoreCallRecorder()
 
