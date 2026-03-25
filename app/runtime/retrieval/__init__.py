@@ -1,5 +1,10 @@
 """Retrieval runtime capabilities."""
 
+from app.runtime.retrieval.gateway_service import (
+    RetrieverService,
+    build_default_retriever_service,
+)
+from app.runtime.retrieval.schemas import RetrievalHit, RetrievalRequest, RetrievalResult
 from app.runtime.retrieval.vector_store import (
     EnsureCollectionRequest,
     EnsureCollectionResult,
@@ -17,6 +22,11 @@ from app.runtime.retrieval.vector_store import (
 )
 
 __all__ = [
+    "RetrieverService",
+    "build_default_retriever_service",
+    "RetrievalHit",
+    "RetrievalRequest",
+    "RetrievalResult",
     "EnsureCollectionRequest",
     "EnsureCollectionResult",
     "VectorDeleteRequest",

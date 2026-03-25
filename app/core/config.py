@@ -54,12 +54,26 @@ def _get_int(name: str, default: int) -> int:
     return int(raw_value)
 
 
+def _get_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return float(raw_value)
+
+
 def _get_optional(name: str) -> str | None:
     raw_value = os.getenv(name)
     if raw_value is None:
         return None
     stripped = raw_value.strip()
     return stripped or None
+
+
+def _get_optional_float(name: str) -> float | None:
+    raw_value = _get_optional(name)
+    if raw_value is None:
+        return None
+    return float(raw_value)
 
 
 load_dotenv_if_present()
@@ -221,6 +235,31 @@ class ChunkingSettings:
             ),
             chunking_keep_heading_prefix=_get_bool(
                 "CHUNKING_KEEP_HEADING_PREFIX", True
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class RetrievalSettings:
+    retrieval_default_top_k: int
+    retrieval_max_top_k: int
+    retrieval_default_score_threshold: float | None
+    retrieval_timeout_ms: int
+    retrieval_enable_hybrid: bool
+    retrieval_query_logical_model: str
+
+    @classmethod
+    def from_env(cls) -> "RetrievalSettings":
+        return cls(
+            retrieval_default_top_k=_get_int("RETRIEVAL_DEFAULT_TOP_K", 10),
+            retrieval_max_top_k=_get_int("RETRIEVAL_MAX_TOP_K", 50),
+            retrieval_default_score_threshold=_get_optional_float(
+                "RETRIEVAL_DEFAULT_SCORE_THRESHOLD"
+            ),
+            retrieval_timeout_ms=_get_int("RETRIEVAL_TIMEOUT_MS", 60000),
+            retrieval_enable_hybrid=_get_bool("RETRIEVAL_ENABLE_HYBRID", False),
+            retrieval_query_logical_model=os.getenv(
+                "RETRIEVAL_QUERY_LOGICAL_MODEL", "embedding_default"
             ),
         )
 

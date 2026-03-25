@@ -256,3 +256,52 @@ class VectorStoreDeleteError(VectorStoreError):
 
 class VectorStoreUnknownError(VectorStoreError):
     code = "vector_store_unknown_error"
+
+
+class RetrievalError(Exception):
+    code = "retrieval_unknown_error"
+    retryable = False
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class RetrievalConfigurationError(RetrievalError):
+    code = "retrieval_configuration_error"
+
+
+class RetrievalValidationError(RetrievalError):
+    code = "retrieval_validation_error"
+
+
+class RetrievalQueryEmptyError(RetrievalError):
+    code = "retrieval_query_empty"
+
+
+class RetrievalEmbeddingError(RetrievalError):
+    code = "retrieval_embedding_error"
+    retryable = True
+
+
+class RetrievalStoreTimeoutError(RetrievalError):
+    code = "retrieval_store_timeout"
+    retryable = True
+
+
+class RetrievalStoreUnavailableError(RetrievalError):
+    code = "retrieval_store_unavailable"
+    retryable = True
+
+
+class RetrievalFilterError(RetrievalError):
+    code = "retrieval_filter_error"
+
+
+class RetrievalResultError(RetrievalError):
+    code = "retrieval_result_error"
+
+
+class RetrievalUnknownError(RetrievalError):
+    code = "retrieval_unknown_error"
