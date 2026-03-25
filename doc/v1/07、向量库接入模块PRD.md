@@ -1,167 +1,130 @@
 # 向量库接入模块 PRD（V1）
+
 ## 1. 文档目的
 
-本文档用于明确 AI 中台在 V1 阶段如何建设统一的“向量库接入模块”，并回答以下问题：
+本文档用于明确 AI 中台在 V1 阶段如何建设统一的“向量库接入模块”，并将 **Qdrant** 作为默认且唯一的生产向量库后端。
+
+本文档重点回答以下问题：
 
 - 向量库接入模块在当前架构中的定位
 - 向量库接入与 Embedding、索引构建、Retrieval 之间的职责边界
-- 向量库接入能力应落在哪些目录与模块
-- 如何定义统一的 collection、schema、upsert、query、delete 协议
-- 知识库、Agent、工作流如何复用统一的向量库接入能力
-- V1 的实现范围、验收标准和后续演进方向
+- 为什么 V1 选择 Qdrant
+- 如何定义统一的 collection、payload、upsert、query、delete 协议
+- 知识库、Retriever、Agent 如何复用统一的向量库能力
+- V1 的实现范围、验收标准与后续演进方向
 
-本文档要解决的问题不是“要不要接向量库”，而是“在当前项目架构下，如何把不同向量库后端的差异收敛为统一、可治理、可扩展的标准能力，而不是散落在知识库入库和检索流程中的 SDK 直连代码”。
+本文档要解决的问题不是“要不要接向量库”，而是“如何把 Qdrant 作为统一向量存储能力沉到检索基础设施层，而不是散落在知识库和检索代码中直接使用 SDK”。
+
 ---
 
 ## 2. 背景
 
-根据当前架构，知识库与检索层由以下关键能力组成：
+当前知识库主链路已经拆分为以下几个能力层：
 
 - 文档解析
 - Chunking
 - Embedding
 - 索引构建
 - 向量库接入
-- Retrieval
-- RAG / Graph RAG
+- Retrieval / RAG
 
 其中：
 
-- 文档解析负责把原始文件还原为标准化文档结构
-- Chunking 负责把长文档切成可索引片段
+- 文档解析负责把原始文件还原为标准化文本与结构化结果
+- Chunking 负责把长文本切分为可索引片段
 - Embedding 负责把片段映射为向量
-- 索引构建负责组织写入批次、索引版本和元数据
-- 向量库接入负责把标准化索引记录写入具体向量后端，并提供统一查询与删除协议
-- Retrieval 负责基于 query、过滤条件和召回策略消费向量库能力
+- 索引构建负责把 chunk、vector、metadata 组织成标准索引记录
+- 向量库接入负责把标准索引记录写入向量库并提供查询、删除能力
+- Retrieval 负责基于 query vector 和过滤条件完成召回
 
-如果不把向量库接入模块独立出来，后续通常会出现以下问题：
+如果不建立统一的向量库接入层，通常会出现以下问题：
 
 - 知识库入库流程直接绑定某个向量库 SDK
-- Retrieval 模块再单独实现一套 query 逻辑
-- 删除、重建、collection 管理、索引版本切换逻辑散落在多个业务服务中
-- 替换向量库后端时影响面过大
-- 无法统一做租户隔离、索引命名、过滤字段约束、观测与审计
+- Retrieval 自己再写一套 query 逻辑
+- collection 命名、过滤字段、版本隔离规则分散在多个模块
+- 后续切换向量库或升级 schema 的影响面过大
+- 无法统一做 trace、错误归一、权限过滤和观测
 
-因此，V1 需要建立统一的向量库接入模块，作为“索引记录到具体向量库后端”的标准适配层。
+因此，V1 需要建立统一的向量库接入模块，并明确：
+
+- **Qdrant 是 V1 的标准生产向量后端**
+- 当前本地 `local_file` 方案仅保留为开发调试或单测兜底，不作为生产方案
+
 ---
 
-## 3. V1 目标
+## 3. V1 方案结论
 
-### 3.1 产品目标
-
-- 提供统一的向量库写入接口
-- 提供统一的向量库查询接口
-- 提供统一的删除、重建、collection 管理接口
-- 支持至少 1 种向量库后端接入
-- 支持知识库入库流程复用统一向量库能力
-- 支持 Retrieval / RAG 复用统一查询能力
-- 支持后续扩展更多向量库后端而不改上层主流程
-- 支持基础 trace、耗时、状态、失败记录与索引版本信息
-
-### 3.2 业务价值
-
-- 降低向量库 SDK 直连带来的耦合
-- 为索引构建和 Retrieval 提供统一数据访问边界
-- 为后续切换 pgvector、Milvus、Qdrant 等后端预留清晰接口
-- 为租户隔离、权限过滤、索引治理、重建治理提供统一抓手
-- 为后续混合检索、多索引、多版本演进提供稳定底座
----
-
-## 4. V1 非目标
-
-以下内容不属于本次 V1 必做范围：
-
-- 不做完整的向量库管理后台 UI
-- 不做多向量字段、多 embedding 视图的复杂管理体系
-- 不做自动 ANN 参数调优
-- 不做完整的混合检索编排平台
-- 不做跨区域多活容灾架构
-- 不做细粒度到财务级别的向量库存储成本结算
-- 不做所有向量库特性的最优抽象覆盖
-
-说明：
-V1 的重点是先把“统一协议 + 单后端打通 + 上层复用”这条主链路跑通。
----
-
-## 5. 术语说明
-
-### 5.1 Vector Store
-
-负责存储向量并支持相似度检索的后端系统，例如：
-
-- pgvector
-- Milvus
-- Qdrant
-- Elasticsearch 向量索引
-
-### 5.2 Collection / Index
-
-向量库中的逻辑存储单元。不同后端名称可能不同，但在本项目中统一抽象为“collection”。
-
-### 5.3 Index Record
-
-索引构建模块输出的标准写入单元，通常包含：
-
-- chunk_id
-- document_id
-- text
-- vector
-- metadata
-
-### 5.4 Filterable Metadata
-
-可被检索过滤条件消费的元数据字段，例如：
-
-- tenant_id
-- app_id
-- knowledge_base_id
-- document_id
-- source_type
-- tags
-
-### 5.5 Similarity Search
-
-基于 query vector 在向量库中执行近似相似度检索的能力。
-
-### 5.6 Namespace
-
-用于表达租户、应用、知识库、索引版本等逻辑隔离边界的统一命名空间概念。
----
-
-## 6. 方案结论
+### 3.1 总体结论
 
 V1 采用以下统一方案：
 
-1. 向量库接入作为独立基础能力落在 `app/runtime/retrieval/vector_store/`
+1. 向量库接入能力落在 `app/runtime/retrieval/vector_store/`
 2. 具体后端适配放在 `app/integrations/vector_stores/`
-3. 索引构建模块只负责组织标准 `IndexRecord`，不直接依赖具体向量库 SDK
-4. Retrieval 模块只调用统一向量库查询接口，不直接依赖具体向量库 SDK
-5. collection 命名、schema 约束、版本命名、过滤字段约束由向量库接入模块统一治理
-6. 后端切换通过 adapter 与配置完成，而不是修改知识库入库和 Retrieval 主流程
+3. V1 生产环境统一使用 **Qdrant**
+4. 知识库入库与 Retrieval 都只能通过统一向量库接口访问 Qdrant
+5. collection 命名、payload 结构、过滤字段、索引版本规则由向量库接入层统一治理
+6. `local_file` 仅保留为开发/测试 fallback，不作为正式部署目标
 
-换句话说：
+### 3.2 选择 Qdrant 的原因
 
-- `runtime/retrieval/vector_store` 管“统一协议、数据面操作与治理规则”
-- `integrations/vector_stores` 管“Milvus / pgvector / Qdrant 等后端差异”
-- `runtime/retrieval/indexing` 管“上游索引记录的组织与写入编排”
-- `runtime/retrieval` 管“检索策略与召回流程”
+V1 选择 Qdrant，主要基于以下考虑：
+
+- 对向量检索场景聚焦，语义清晰，接入成本低
+- 原生支持 payload filter，适合 `tenant_id/app_id/knowledge_base_id/document_id` 这类过滤
+- 支持 collection 管理，适合做索引版本切换
+- 支持 HTTP 与 Python SDK，便于统一封装
+- 支持余弦、点积、欧式距离，能覆盖当前 embedding 检索需求
+- 适合中小规模到中大规模知识库场景，运维复杂度低于自建 pgvector 方案
+
+### 3.3 不采用其他方案作为 V1 主方案的原因
+
+- `local_file`：只适合开发和单测，不适合生产检索、并发写入和可观测治理
+- `pgvector`：适合与关系库强耦合场景，但 V1 重点不是关系查询整合，而是尽快建立标准检索底座
+- `Milvus`：能力强，但 V1 当前复杂度和运维成本偏高
+
 ---
 
-## 7. 与其他模块的职责边界
+## 4. 目标与非目标
 
-### 7.1 与 Embedding 模块
+### 4.1 V1 目标
+
+- 提供统一的向量写入接口
+- 提供统一的向量查询接口
+- 提供统一的删除接口
+- 使用 Qdrant 落地知识库索引存储
+- 支持 collection 级索引版本隔离
+- 支持 metadata filter
+- 支持基础 trace、错误归一、调用耗时记录
+- 让知识库入库和 Retrieval 走同一套向量库能力
+
+### 4.2 V1 非目标
+
+- 不做完整的向量库管理后台 UI
+- 不做多向量字段管理
+- 不做稀疏向量/混合检索一体化编排
+- 不做自动 ANN 参数调优
+- 不做跨地域多活容灾
+- 不做多后端同时在线切换治理
+
+---
+
+## 5. 架构定位与职责边界
+
+### 5.1 与 Embedding 模块
 
 Embedding 负责：
 
 - 文本到向量
-- provider / model 调用
+- provider/model 调用
 - 向量维度返回
 
 向量库接入模块负责：
 
-- 向量的存储
-- 向量的查询
-- collection / schema / upsert / delete
+- collection 管理
+- 向量写入
+- 向量查询
+- 向量删除
+- payload filter 映射
 
 向量库接入模块不负责：
 
@@ -169,489 +132,411 @@ Embedding 负责：
 - 选择 embedding 模型
 - provider fallback
 
-### 7.2 与索引构建模块
+### 5.2 与索引构建模块
 
 索引构建模块负责：
 
 - 组织 `IndexRecord`
-- 组织批次写入请求
-- 管理索引版本语义
+- 组织批量写入请求
+- 管理 `index_version` 语义
 
 向量库接入模块负责：
 
-- 校验 collection 是否存在
-- 写入记录
-- 维护后端 schema 兼容性
-- 提供统一 upsert / delete / query 接口
+- 确保 collection 存在
+- 校验向量维度
+- 执行 upsert / query / delete
+- 维护后端 schema 与命名规则
 
-向量库接入模块不负责：
-
-- 决定 chunk 结构
-- 决定 embedding 模型
-- 直接编排入库主流程
-
-### 7.3 与 Retrieval / RAG 模块
+### 5.3 与 Retrieval 模块
 
 Retrieval 负责：
 
-- query 理解
-- query 改写
-- 混合检索编排
-- rerank 与结果组装
+- 生成 query vector
+- 组织 filter / top_k
+- 处理召回后的阈值过滤、去重、后续 rerank
 
 向量库接入模块负责：
 
-- 相似度检索
-- 过滤条件透传
-- top_k 查询
+- 执行相似度检索
+- 把统一 filter 映射成 Qdrant filter
 - 返回统一命中结果结构
 
-向量库接入模块不负责：
-
-- 最终召回策略决策
-- 多路检索融合
-- rerank
-
-### 7.4 与知识库模块
+### 5.4 与知识库模块
 
 知识库模块负责：
 
 - 文档上传
 - 入库任务编排
-- 触发文档解析、Chunking、Embedding、索引构建
+- 触发解析、Chunking、Embedding、索引构建
 
 向量库接入模块不负责：
 
-- 入库业务状态机
 - 文档生命周期管理
-- 知识库权限业务规则本身
+- 入库业务状态机
+- 权限业务规则本身
 
-### 7.5 与模型管理模块
-
-模型管理模块负责：
-
-- Embedding 模型配置与路由
-
-向量库接入模块负责：
-
-- 向量库后端配置与能力适配
-
-二者边界必须清晰：模型管理不管理向量库存储细节，向量库接入不管理 embedding 模型路由。
 ---
 
-## 8. 用户与使用场景
+## 6. V1 存储方案
 
-### 8.1 知识库入库场景
+### 6.1 Qdrant 作为正式向量存储
 
-- 作为知识库模块，我希望标准索引记录可以统一写入向量库，而不是每条入库链路各自维护 SDK 逻辑
-- 我希望重试、覆盖写入、删除旧版本索引时有统一能力
-- 我希望未来切换向量库后端时不修改入库主流程
+生产环境使用 Qdrant 存储以下内容：
 
-### 8.2 Retrieval 场景
+- 向量
+- chunk text
+- document_id / chunk_id
+- 检索过滤所需 payload
+- 原文定位信息摘要
 
-- 作为 Retrieval 模块，我希望只关心 query vector、filter 和 top_k，不关心底层向量库协议差异
-- 我希望不同后端返回统一的命中结果结构
-- 我希望召回结果能稳定回溯到 chunk 与 document 元数据
+### 6.2 local_file 的定位
 
-### 8.3 平台治理场景
+`local_file` 保留为以下用途：
 
-- 作为平台，我希望统一记录 collection、索引版本、写入批次、查询耗时和失败原因
-- 我希望统一治理租户隔离、字段约束和后端配置
-- 我希望后续支持多个向量库后端并保持上层接口稳定
+- 本地开发调试
+- 单元测试
+- 无外部依赖时的最小可运行模式
+
+但不作为：
+
+- 生产环境向量库
+- 压测环境标准后端
+- 正式知识库部署方案
+
 ---
 
-## 9. 范围定义
+## 7. 数据模型设计
 
-### 9.1 V1 必做范围
+### 7.1 collection 命名规则
 
-- 统一的 collection 管理协议
-- 统一的 upsert 协议
-- 统一的 similarity query 协议
-- 统一的 delete 协议
-- 统一的 schema / metadata 字段约束
-- 至少 1 种向量库后端 adapter
-- 知识库入库主链路复用
-- Retrieval 查询主链路复用
-- 基础 trace 与错误归一
-
-### 9.2 V1 预留但不强制实现
-
-- 多向量字段
-- 稀疏向量与倒排混合索引协同
-- 多 collection 联邦查询
-- 自动建索引参数优化
-- 向量压缩与量化优化
-- 向量库冷热分层
-- 查询缓存
-- 分片迁移与在线重平衡
----
-
-## 10. 推荐目录落位
-
-建议后续按以下目录落位：
+统一规则：
 
 ```text
-app/
-├─ runtime/
-│  ├─ retrieval/
-│  │  ├─ vector_store/
-│  │  │  ├─ schemas.py
-│  │  │  ├─ base.py
-│  │  │  ├─ collection_service.py
-│  │  │  ├─ query_service.py
-│  │  │  ├─ write_service.py
-│  │  │  └─ capability_registry.py
-│  │  └─ indexing/
-│  │     ├─ service.py
-│  │     └─ index_builder.py
-├─ integrations/
-│  ├─ vector_stores/
-│  │  ├─ base.py
-│  │  ├─ pgvector_adapter.py
-│  │  ├─ milvus_adapter.py
-│  │  └─ qdrant_adapter.py
-├─ modules/
-│  └─ knowledge_center/
-│     └─ services/
-│        ├─ ingestion_service.py
-│        └─ retrieval_service.py
+{prefix}{tenant_id}__{app_id}__{knowledge_base_id}__{index_name}__{index_version}
 ```
+
+默认前缀：
+
+```text
+kb_
+```
+
+要求：
+
+- 由接入层统一生成
+- 上层业务不得自行拼接 collection 名称
+- 必须包含租户、应用、知识库、索引名、索引版本
+
+### 7.2 Qdrant point 映射
+
+统一写入 Qdrant 的 point 结构如下：
+
+- `id`: 使用稳定主键，建议为 `chunk_id`
+- `vector`: embedding 结果
+- `payload`: 统一 metadata
+
+### 7.3 payload 字段建议
+
+V1 标准 payload 至少包含：
+
+- `tenant_id`
+- `app_id`
+- `knowledge_base_id`
+- `index_name`
+- `index_version`
+- `document_id`
+- `chunk_id`
+- `text`
+- `chunk_index`
+- `file_name`
+- `file_type`
+- `source_type`
+- `title_path`
+- `page_range`
+- `source_block_ids`
+- `source_positions`
+- `source_position`
+- `policy_name`
 
 说明：
 
-- `runtime/retrieval/vector_store/` 负责统一协议与调用编排
-- `integrations/vector_stores/` 负责具体后端适配
-- `runtime/retrieval/indexing/` 只组织写入，不直连后端 SDK
-- `knowledge_center` 与 Retrieval 服务只依赖统一接入层
+- `text` 放入 payload，便于直接返回召回文本
+- `source_position` 用于快速返回单一定位
+- `source_positions` 用于保留更完整的位置信息
+
+### 7.4 位置信息约束
+
+当前阶段最小定位信息遵循既有 PRD：
+
+- 页式文档只保留 `page_no`
+- Excel / CSV 先保留 `row_index`
+
+因此 `source_position` / `source_positions` 中，V1 必须保证：
+
+- PDF / 图片 / PPT 等页式文档可回溯 `page_no`
+- Excel / CSV 可回溯 `row_index`
+
 ---
 
-## 11. 核心产品规则
+## 8. 接口协议
 
-### 11.1 单一向量库入口规则
-
-上层业务只能通过统一向量库接入模块操作向量后端，不允许直接依赖具体 SDK。
-
-### 11.2 单一命名规则
-
-collection 命名必须通过统一规则生成，不允许业务层随意拼接，至少应包含：
-
-- tenant_id
-- app_id 或 knowledge_base_id
-- index_name
-- index_version
-
-### 11.3 单一 schema 约束规则
-
-所有写入向量库的记录都必须符合统一 metadata 字段白名单与类型约束，不允许各业务自行扩展为不可治理结构。
-
-### 11.4 单一 upsert 语义规则
-
-对同一 `collection + chunk_id` 的重复写入必须具备稳定 upsert 语义，不允许产生不可控重复记录。
-
-### 11.5 查询结果标准化规则
-
-无论底层后端是什么，返回给 Retrieval 的结果都必须包含统一字段：
-
-- chunk_id
-- document_id
-- score
-- text
-- metadata
-
-### 11.6 权限过滤前置规则
-
-向量库查询必须支持 tenant、app、knowledge_base、document 等过滤字段透传，不能把权限控制完全推迟到结果返回后再做。
----
-
-## 12. 功能需求
-
-### 12.1 collection 管理能力
-
-系统必须支持统一的 collection 生命周期能力，例如：
+### 8.1 Ensure Collection
 
 ```python
 ensure_collection(request: EnsureCollectionRequest) -> EnsureCollectionResult
 ```
 
-至少支持：
+职责：
 
 - 检查 collection 是否存在
 - 不存在时创建
-- 校验维度是否兼容
-- 校验关键 metadata schema 是否兼容
+- 校验向量维度与距离类型
 
-### 12.2 向量写入能力
-
-系统必须支持统一的写入接口，例如：
+### 8.2 Upsert Records
 
 ```python
 upsert_records(request: VectorUpsertRequest) -> VectorUpsertResult
 ```
 
-至少支持：
+职责：
 
-- 批量 upsert
-- 幂等主键
-- 成功数 / 失败数
-- 批次级错误返回
+- 批量写入 points
+- 对同一 `collection + chunk_id` 执行稳定 upsert
+- 返回成功数、失败数、错误信息
 
-### 12.3 向量查询能力
-
-系统必须支持统一的查询接口，例如：
+### 8.3 Query Vectors
 
 ```python
 query_vectors(request: VectorQueryRequest) -> VectorQueryResult
 ```
 
-至少支持：
+职责：
 
-- query vector 查询
-- top_k
-- metadata filter
-- score 返回
+- 使用 query vector 执行相似度搜索
+- 支持 `top_k`
+- 支持 metadata filter
+- 返回统一命中结构
 
-### 12.4 删除能力
-
-系统必须支持统一的删除接口，例如：
+### 8.4 Delete Records
 
 ```python
 delete_records(request: VectorDeleteRequest) -> VectorDeleteResult
 ```
 
-至少支持：
+职责：
 
-- 按 chunk_id 删除
-- 按 document_id 批量删除
-- 按 collection / index_version 级别清理
-
-### 12.5 schema 校验能力
-
-V1 必须支持最小 schema 校验：
-
-- vector dimension
-- 主键字段
-- tenant / app / knowledge_base 等过滤字段
-- text 与 metadata 字段存在性
-
-### 12.6 能力探测能力
-
-由于不同向量库特性差异较大，适配层需要暴露最小能力集，例如：
-
-- 是否支持 metadata filter
-- 是否支持删除表达式
-- 是否支持 collection 级 schema
-- 是否支持命名空间隔离
+- 按 `chunk_id` 删除
+- 按 `document_id` 批量删除
+- 后续可扩展按 `index_version` 清理
 
 ---
 
-## 13. 数据模型建议
+## 9. Qdrant 适配规则
 
-### 13.1 collection 请求对象
+### 9.1 距离类型映射
 
-```python
-class EnsureCollectionRequest(BaseModel):
-    tenant_id: str
-    app_id: str
-    knowledge_base_id: str
-    index_name: str
-    index_version: str
-    dimension: int
-    metric_type: str = "cosine"
-    metadata_schema: dict = Field(default_factory=dict)
-```
+统一 metric 与 Qdrant distance 的映射：
 
-### 13.2 写入请求对象
+- `cosine` -> `Cosine`
+- `dot` -> `Dot`
+- `euclidean` -> `Euclid`
+
+### 9.2 filter 映射
+
+统一过滤请求：
 
 ```python
-class VectorRecord(BaseModel):
-    chunk_id: str
-    document_id: str
-    text: str
-    vector: list[float]
-    metadata: dict = Field(default_factory=dict)
-
-
-class VectorUpsertRequest(BaseModel):
-    tenant_id: str
-    app_id: str
-    knowledge_base_id: str
-    collection_name: str
-    index_version: str
-    records: list[VectorRecord]
-    metadata: dict = Field(default_factory=dict)
+filters = {
+    "tenant_id": "t1",
+    "knowledge_base_id": "kb1",
+    "document_id": ["doc1", "doc2"],
+}
 ```
 
-### 13.3 查询请求对象
+映射为 Qdrant filter 时要求：
 
-```python
-class VectorQueryRequest(BaseModel):
-    tenant_id: str
-    app_id: str
-    knowledge_base_id: str
-    collection_name: str
-    query_vector: list[float]
-    top_k: int = 10
-    filters: dict = Field(default_factory=dict)
-    metadata: dict = Field(default_factory=dict)
-```
+- 单值字段使用 `match`
+- 多值字段使用 `should` 或等价 `match any`
+- 上层不感知 Qdrant 原生 filter 结构
 
-### 13.4 查询结果对象
+### 9.3 主键策略
 
-```python
-class VectorHit(BaseModel):
-    chunk_id: str
-    document_id: str
-    score: float
-    text: str | None = None
-    metadata: dict = Field(default_factory=dict)
+V1 统一使用 `chunk_id` 作为 point id。
 
+要求：
 
-class VectorQueryResult(BaseModel):
-    trace_id: str
-    collection_name: str
-    total_hits: int
-    hits: list[VectorHit] = Field(default_factory=list)
-    latency_ms: int
-    provider: str
-```
+- 同一 chunk 重复写入时能覆盖
+- 保证删除与回溯简单稳定
 
-### 13.5 删除请求对象
+### 9.4 collection 维度约束
 
-```python
-class VectorDeleteRequest(BaseModel):
-    tenant_id: str
-    app_id: str
-    knowledge_base_id: str
-    collection_name: str
-    chunk_ids: list[str] = Field(default_factory=list)
-    document_ids: list[str] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
-```
+同一个 collection 只允许一种向量维度。
+
+因此：
+
+- 切换 embedding 模型且维度变化时，必须切换 `index_version`
+- 不允许不同维度写入同一 collection
+
 ---
 
-## 14. 标准执行流程
-
-### 14.1 入库写入流程
+## 10. 推荐目录落位
 
 ```text
-Chunking 输出标准 chunk
--> Embedding 输出向量
--> 索引构建模块组装 IndexRecord
--> 向量库接入模块 ensure collection
--> 向量库接入模块 upsert records
+app/
+├─ runtime/
+│  └─ retrieval/
+│     └─ vector_store/
+│        ├─ schemas.py
+│        ├─ service.py
+│        └─ __init__.py
+├─ integrations/
+│  └─ vector_stores/
+│     ├─ base.py
+│     ├─ qdrant_adapter.py
+│     ├─ local_file_adapter.py
+│     └─ __init__.py
+└─ modules/
+   └─ knowledge_center/
+      └─ services/
+         └─ knowledge_index_service.py
+```
+
+说明：
+
+- `runtime/retrieval/vector_store/` 负责统一协议和治理
+- `integrations/vector_stores/qdrant_adapter.py` 负责封装 Qdrant SDK / HTTP API
+- `knowledge_center` 和 `retrieval` 只能依赖统一 service，不直接依赖 Qdrant
+
+---
+
+## 11. 配置设计
+
+### 11.1 环境变量建议
+
+```env
+# Vector store runtime
+VECTOR_STORE_PROVIDER=qdrant
+VECTOR_STORE_TIMEOUT_MS=60000
+VECTOR_STORE_DEFAULT_METRIC=cosine
+VECTOR_STORE_COLLECTION_PREFIX=kb_
+VECTOR_STORE_LOCAL_DIR=data/vector_store
+
+# Qdrant
+QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=
+QDRANT_GRPC_PORT=6334
+QDRANT_PREFER_GRPC=false
+QDRANT_HTTPS=false
+```
+
+### 11.2 配置原则
+
+- 生产默认 `VECTOR_STORE_PROVIDER=qdrant`
+- 上层业务不允许感知 Qdrant 连接细节
+- collection 前缀与 metric 由接入层统一治理
+- 开发环境可切回 `local_file`，但默认文档和部署说明以 Qdrant 为准
+
+---
+
+## 12. 核心产品规则
+
+### 12.1 单一向量库入口规则
+
+上层业务只能通过统一向量库接入模块访问 Qdrant，不允许业务代码直接调用 Qdrant SDK。
+
+### 12.2 单一命名规则
+
+collection 名称必须由接入层生成，不允许业务层自由拼接。
+
+### 12.3 单一 payload 规则
+
+所有写入 Qdrant 的 point payload 必须符合统一字段规范，不允许各业务模块输出不可治理的自定义结构。
+
+### 12.4 单一 upsert 语义
+
+同一 `collection + chunk_id` 重复写入必须表现为幂等覆盖，而不是产生重复记录。
+
+### 12.5 权限过滤前置规则
+
+检索过滤必须在 Qdrant 查询阶段完成，至少支持：
+
+- `tenant_id`
+- `app_id`
+- `knowledge_base_id`
+- `document_id`
+
+不能依赖“先查出结果再在应用层筛掉”。
+
+---
+
+## 13. 标准执行流程
+
+### 13.1 入库写入流程
+
+```text
+文档解析
+-> Chunking
+-> Embedding
+-> 索引构建
+-> VectorStoreService.ensure_collection()
+-> VectorStoreService.upsert_records()
 -> 返回写入结果
 ```
 
-### 14.2 检索查询流程
+### 13.2 检索查询流程
 
 ```text
 用户 query
 -> Embedding 生成 query vector
--> Retrieval 组装 filter / top_k
--> 向量库接入模块 query
+-> Retrieval 组装 filters / top_k
+-> VectorStoreService.query_vectors()
 -> 返回统一命中结果
--> Retrieval 后续 rerank / 组装
+-> Retrieval 继续做阈值过滤 / 去重 / rerank
 ```
 
-### 14.3 索引重建流程
+### 13.3 索引重建流程
 
 ```text
 创建新 index_version 对应 collection
--> 批量写入新版本记录
+-> 批量写入新版本数据
 -> 校验写入完成
 -> 上层切换 active index_version
 -> 按策略清理旧版本 collection
 ```
+
 ---
 
-## 15. 模块职责设计
+## 14. 实现要求
 
-### 15.1 runtime/retrieval/vector_store
+### 14.1 V1 必做
 
-职责：
+- 新增 Qdrant adapter
+- 新增 Qdrant 连接配置
+- `VectorStoreService` 默认 provider 切换为 `qdrant`
+- 知识库写入链路接到 Qdrant
+- Retrieval 查询链路接到 Qdrant
+- 支持按 document_id 删除
+- 支持统一 metadata filter
+- 支持 trace、provider、collection、latency 记录
 
-- 定义统一协议
-- 选择具体 adapter
-- 执行 ensure / upsert / query / delete
-- 统一错误归一与结果标准化
-- 统一命名规则与 schema 校验
+### 14.2 V1 可选但推荐
 
-非职责：
+- 为高频过滤字段建立 payload index
+- 增加 collection 初始化检查
+- 增加启动期健康检查
 
-- 不生成向量
-- 不决定召回策略
-- 不承担入库任务调度
+### 14.3 V1 不做
 
-### 15.2 integrations/vector_stores
+- 稀疏向量
+- 多向量字段
+- hybrid search 编排
+- shard/replica 自动治理
 
-职责：
-
-- 对接具体向量库 SDK 或 HTTP API
-- 封装 collection、upsert、query、delete 差异
-- 映射统一请求和响应结构
-
-非职责：
-
-- 不承担业务权限决策
-- 不编排上层工作流
-- 不决定 embedding 模型与索引版本策略
-
-### 15.3 runtime/retrieval/indexing
-
-职责：
-
-- 组织 IndexRecord
-- 组织索引版本
-- 调用向量库接入模块
-
-非职责：
-
-- 不直接依赖具体向量库后端
-
-### 15.4 retrieval service
-
-职责：
-
-- 组织 query vector、filters、top_k
-- 消费统一 query 结果
-
-非职责：
-
-- 不直接依赖具体向量库后端
 ---
 
-## 16. 配置设计
+## 15. 错误模型建议
 
-### 16.1 环境变量建议
-
-```env
-# Vector store runtime
-VECTOR_STORE_PROVIDER=pgvector
-VECTOR_STORE_TIMEOUT_MS=60000
-VECTOR_STORE_DEFAULT_METRIC=cosine
-VECTOR_STORE_COLLECTION_PREFIX=kb_
-
-# pgvector
-PGVECTOR_DSN=
-PGVECTOR_SCHEMA=public
-
-# milvus
-MILVUS_URI=
-MILVUS_TOKEN=
-MILVUS_DATABASE=default
-```
-
-### 16.2 配置原则
-
-- 向量库后端选择通过统一配置完成
-- 上层业务不直接保存具体后端凭据
-- collection 命名规则统一由接入层管理
-- schema 与维度约束必须可配置但不可由业务任意突破
----
-
-## 17. 错误模型建议
-
-系统内部建议至少归一以下错误类型：
+系统内部至少归一以下错误类型：
 
 - `vector_store_configuration_error`
 - `vector_store_validation_error`
@@ -665,145 +550,130 @@ MILVUS_DATABASE=default
 - `vector_store_delete_error`
 - `vector_store_unknown_error`
 
-目标是让上层模块不直接感知具体 SDK 或具体后端的原始错误格式。
+目标是让上层模块不直接感知 Qdrant SDK 的原始异常格式。
+
 ---
 
-## 18. 观测与审计
+## 16. 观测与审计
 
 每次 collection 操作至少记录：
 
-- trace_id
-- provider
-- collection_name
-- dimension
-- metric_type
-- status
-- latency_ms
+- `trace_id`
+- `provider`
+- `collection_name`
+- `dimension`
+- `metric_type`
+- `status`
+- `latency_ms`
 
 每次 upsert 至少记录：
 
-- trace_id
-- tenant_id
-- app_id
-- knowledge_base_id
-- collection_name
-- index_version
-- batch_size
-- success_count
-- failed_count
-- latency_ms
-- status
-- error_code
+- `trace_id`
+- `tenant_id`
+- `app_id`
+- `knowledge_base_id`
+- `collection_name`
+- `index_version`
+- `batch_size`
+- `success_count`
+- `failed_count`
+- `latency_ms`
+- `status`
+- `error_code`
 
 每次 query 至少记录：
 
-- trace_id
-- collection_name
-- top_k
-- filter_keys
-- hit_count
-- latency_ms
-- status
-- error_code
+- `trace_id`
+- `collection_name`
+- `top_k`
+- `filter_keys`
+- `hit_count`
+- `latency_ms`
+- `status`
+- `error_code`
 
-建议重点关注以下指标：
-
-- collection 创建次数
-- upsert 成功率
-- query 平均耗时
-- query P95 / P99
-- 删除成功率
-- 维度不兼容错误数
-- 后端不可用错误数
 ---
 
-## 19. 风险与约束
+## 17. 风险与约束
 
-### 19.1 风险
+### 17.1 风险
 
-- 如果索引构建和 Retrieval 分别直连不同 SDK，后续会形成双接入层
-- 如果 collection 命名不统一，版本切换和租户隔离会失控
-- 如果 metadata 字段不做白名单约束，后续过滤条件会难以治理
-- 如果不统一标准化 query 结果，Retrieval 层会被多个后端格式绑死
-- 如果维度和 schema 校验缺失，索引重建和模型切换时容易产生脏数据
+- 如果知识库和 Retrieval 分别直连不同 Qdrant 调用实现，会形成双接入层
+- 如果 collection 命名不统一，会导致索引版本切换混乱
+- 如果 payload 字段不收敛，后续 filter 会难以治理
+- 如果维度校验缺失，切换 embedding 模型时容易写出脏数据
 
-### 19.2 约束
+### 17.2 约束
 
 - V1 必须优先保证边界清晰
-- V1 必须支持单后端稳定跑通
-- V1 必须保证知识库入库与 Retrieval 都走同一接入层
-- V1 不应为了兼容所有后端特性而破坏统一协议
+- V1 必须先保证单后端稳定跑通
+- V1 必须保证知识库入库与 Retrieval 共用同一接入层
+- V1 不为了兼容所有向量库特性而破坏统一协议
+
 ---
 
-## 20. 分阶段落地建议
+## 18. 分阶段落地建议
 
-### 20.1 第一阶段
+### 18.1 第一阶段
 
 - 定义统一协议
-- 实现 1 个向量库 adapter
-- 打通知识库入库写入链路
+- 增加 Qdrant adapter
+- 打通知识库写入链路
 - 打通 Retrieval 查询链路
 
-### 20.2 第二阶段
+### 18.2 第二阶段
 
-- 增加删除与重建能力
-- 增加 collection schema 校验
-- 增加索引版本切换支持
-- 增加基础能力探测
+- 增加 payload index
+- 增加删除与重建治理
+- 增加健康检查与启动自检
 
-### 20.3 第三阶段
+### 18.3 第三阶段
 
-- 增加更多向量库后端
-- 增加混合检索协同接口
-- 增加查询缓存与更丰富的治理指标
-- 增加多版本索引运维治理能力
+- 增加 hybrid search 扩展能力
+- 增加更多后端适配
+- 增加多版本索引治理能力
+
 ---
 
-## 21. 验收标准
+## 19. 验收标准
 
-### 21.1 功能验收
+### 19.1 功能验收
 
-- 标准 `IndexRecord` 可统一写入至少 1 个向量库后端
+- 标准 `VectorRecord` 可统一写入 Qdrant
 - Retrieval 可通过统一 query 接口完成向量召回
-- 同一 collection + chunk_id 重复写入具备稳定 upsert 语义
-- 可按 document_id 或 chunk_id 执行删除
-- 可按 index_version 支持重建与切换
+- 同一 `collection + chunk_id` 重复写入具备稳定 upsert 语义
+- 可按 `document_id` 或 `chunk_id` 删除
+- 可按 `index_version` 支持重建和切换
 
-### 21.2 架构验收
+### 19.2 架构验收
 
-- 上层业务不直接依赖具体向量库 SDK
+- 上层业务不直接依赖 Qdrant SDK
 - Embedding、索引构建、向量库接入、Retrieval 边界清晰
-- 具体后端差异被收敛在 `integrations/vector_stores/`
-- collection 命名与 schema 治理由统一模块负责
+- Qdrant 差异收敛在 `integrations/vector_stores/`
+- collection 命名与 payload 规则由统一模块治理
 
-### 21.3 数据验收
+### 19.3 数据验收
 
-- 每次写入与查询均有 trace_id
-- 可回溯 provider、collection、index_version
-- 命中结果可回溯 chunk_id 与 document_id
-- 维度不兼容与 schema 错误可被识别和归类
+- 每次写入与查询都有 `trace_id`
+- 可回溯 `provider / collection / index_version`
+- 命中结果可回溯 `chunk_id / document_id / source_position`
+- 维度不兼容与 schema 错误可被识别并归类
+
 ---
 
-## 22. 最终结论摘要
+## 20. 最终结论摘要
 
-向量库接入模块不应散落在知识库入库、Retrieval 或 Agent 业务流程中，而应作为知识库与检索层中的独立标准能力实现。
+V1 的向量库接入模块应明确以 **Qdrant** 为统一生产后端，而不是继续使用本地文件型向量存储承载正式知识库能力。
 
-正确的链路应是：
+正确链路应为：
 
 ```text
-文档解析 -> Chunking -> Embedding -> 索引构建 -> 向量库接入 -> Retrieval / RAG
+文档解析 -> Chunking -> Embedding -> 索引构建 -> Qdrant 向量库接入 -> Retrieval / RAG
 ```
-
-这意味着：
-
-- Embedding 负责“文本到向量”
-- 索引构建负责“组织标准写入记录”
-- 向量库接入负责“把记录写入、查询、删除到具体后端”
-- Retrieval 负责“基于统一查询结果做召回编排”
 
 这样做的结果是：
 
 - 架构边界更清晰
-- 后端切换成本更低
-- 治理与观测更集中
-- 后续混合检索、多版本索引和多后端扩展更容易落地
+- 知识库入库与检索共用同一存储底座
+- 向量数据、过滤字段和索引版本更容易治理
+- 后续扩展 hybrid search 或替换后端时成本更低

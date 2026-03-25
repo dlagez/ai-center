@@ -26,6 +26,32 @@ class DocumentChunkService:
         self._chunking_service = chunking_service
         self._document_parse_service = document_parse_service
 
+    def chunk_raw_text(
+        self,
+        *,
+        tenant_id: str,
+        app_id: str,
+        document_id: str,
+        raw_text: str,
+        scene: str = "knowledge_ingest",
+        file_name: str | None = None,
+        file_type: str | None = None,
+        policy: ChunkingPolicyConfig | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> ChunkingResult:
+        request = ChunkingRequest(
+            tenant_id=tenant_id,
+            app_id=app_id,
+            document_id=document_id,
+            scene=scene,
+            raw_text=raw_text,
+            file_name=file_name,
+            file_type=file_type,
+            policy=policy,
+            metadata=dict(metadata or {}),
+        )
+        return self._chunking_service.chunk_document(request)
+
     def chunk_parsed_document(
         self,
         *,
