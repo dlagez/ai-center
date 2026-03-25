@@ -124,3 +124,33 @@ class DocumentParseBadResponseError(DocumentParseError):
 
 class DocumentParseCacheError(DocumentParseError):
     code = "document_parse_cache_error"
+
+
+class ChunkingError(Exception):
+    code = "chunking_unknown_error"
+    retryable = False
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class ChunkingConfigurationError(ChunkingError):
+    code = "chunking_configuration_error"
+
+
+class ChunkingValidationError(ChunkingError):
+    code = "chunking_validation_error"
+
+
+class ChunkingEmptyInputError(ChunkingError):
+    code = "chunking_empty_input_error"
+
+
+class ChunkingBadDocumentError(ChunkingError):
+    code = "chunking_bad_document_error"
+
+
+class ChunkingPolicyError(ChunkingError):
+    code = "chunking_policy_error"

@@ -157,3 +157,30 @@ class DocumentParseSettings:
                 "DOCUMENT_PARSE_DOWNLOAD_TIMEOUT_MS", 60000
             ),
         )
+
+
+@dataclass(frozen=True)
+class ChunkingSettings:
+    chunking_default_policy_name: str
+    chunking_max_chars: int
+    chunking_overlap_chars: int
+    chunking_split_by_heading: bool
+    chunking_split_by_paragraph: bool
+    chunking_keep_heading_prefix: bool
+
+    @classmethod
+    def from_env(cls) -> "ChunkingSettings":
+        return cls(
+            chunking_default_policy_name=os.getenv(
+                "CHUNKING_DEFAULT_POLICY_NAME", "default"
+            ),
+            chunking_max_chars=_get_int("CHUNKING_MAX_CHARS", 1200),
+            chunking_overlap_chars=_get_int("CHUNKING_OVERLAP_CHARS", 150),
+            chunking_split_by_heading=_get_bool("CHUNKING_SPLIT_BY_HEADING", True),
+            chunking_split_by_paragraph=_get_bool(
+                "CHUNKING_SPLIT_BY_PARAGRAPH", True
+            ),
+            chunking_keep_heading_prefix=_get_bool(
+                "CHUNKING_KEEP_HEADING_PREFIX", True
+            ),
+        )
