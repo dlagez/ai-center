@@ -200,3 +200,59 @@ class ChunkingBadDocumentError(ChunkingError):
 
 class ChunkingPolicyError(ChunkingError):
     code = "chunking_policy_error"
+
+
+class VectorStoreError(Exception):
+    code = "vector_store_unknown_error"
+    retryable = False
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class VectorStoreConfigurationError(VectorStoreError):
+    code = "vector_store_configuration_error"
+
+
+class VectorStoreValidationError(VectorStoreError):
+    code = "vector_store_validation_error"
+
+
+class VectorStoreCollectionError(VectorStoreError):
+    code = "vector_store_collection_error"
+
+
+class VectorStoreDimensionMismatchError(VectorStoreError):
+    code = "vector_store_dimension_mismatch"
+
+
+class VectorStoreTimeoutError(VectorStoreError):
+    code = "vector_store_timeout_error"
+    retryable = True
+
+
+class VectorStoreAuthenticationError(VectorStoreError):
+    code = "vector_store_authentication_error"
+
+
+class VectorStoreProviderUnavailableError(VectorStoreError):
+    code = "vector_store_provider_unavailable"
+    retryable = True
+
+
+class VectorStoreWriteError(VectorStoreError):
+    code = "vector_store_write_error"
+
+
+class VectorStoreQueryError(VectorStoreError):
+    code = "vector_store_query_error"
+
+
+class VectorStoreDeleteError(VectorStoreError):
+    code = "vector_store_delete_error"
+
+
+class VectorStoreUnknownError(VectorStoreError):
+    code = "vector_store_unknown_error"

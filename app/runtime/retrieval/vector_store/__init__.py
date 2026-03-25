@@ -1,6 +1,6 @@
-"""Retrieval runtime capabilities."""
+"""Vector store runtime abstractions."""
 
-from app.runtime.retrieval.vector_store import (
+from app.runtime.retrieval.vector_store.schemas import (
     EnsureCollectionRequest,
     EnsureCollectionResult,
     VectorDeleteRequest,
@@ -10,9 +10,11 @@ from app.runtime.retrieval.vector_store import (
     VectorQueryResult,
     VectorRecord,
     VectorStoreCapabilities,
-    VectorStoreService,
     VectorUpsertRequest,
     VectorUpsertResult,
+)
+from app.runtime.retrieval.vector_store.service import (
+    VectorStoreService,
     build_default_vector_store_service,
 )
 

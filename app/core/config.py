@@ -223,3 +223,35 @@ class ChunkingSettings:
                 "CHUNKING_KEEP_HEADING_PREFIX", True
             ),
         )
+
+
+@dataclass(frozen=True)
+class VectorStoreSettings:
+    vector_store_provider: str
+    vector_store_timeout_ms: int
+    vector_store_default_metric: str
+    vector_store_collection_prefix: str
+    vector_store_local_dir: str
+
+    @classmethod
+    def from_env(cls) -> "VectorStoreSettings":
+        project_root = Path(__file__).resolve().parents[2]
+        raw_local_dir = os.getenv(
+            "VECTOR_STORE_LOCAL_DIR",
+            str(project_root / "data" / "vector_store"),
+        )
+        local_dir = Path(raw_local_dir)
+        if not local_dir.is_absolute():
+            local_dir = project_root / local_dir
+
+        return cls(
+            vector_store_provider=os.getenv("VECTOR_STORE_PROVIDER", "local_file"),
+            vector_store_timeout_ms=_get_int("VECTOR_STORE_TIMEOUT_MS", 60000),
+            vector_store_default_metric=os.getenv(
+                "VECTOR_STORE_DEFAULT_METRIC", "cosine"
+            ),
+            vector_store_collection_prefix=os.getenv(
+                "VECTOR_STORE_COLLECTION_PREFIX", "kb_"
+            ),
+            vector_store_local_dir=str(local_dir),
+        )

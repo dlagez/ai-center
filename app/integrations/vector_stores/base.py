@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+
+from app.runtime.retrieval.vector_store.schemas import (
+    EnsureCollectionRequest,
+    EnsureCollectionResult,
+    VectorDeleteRequest,
+    VectorDeleteResult,
+    VectorQueryRequest,
+    VectorQueryResult,
+    VectorStoreCapabilities,
+    VectorUpsertRequest,
+    VectorUpsertResult,
+)
+
+
+class BaseVectorStoreAdapter(ABC):
+    provider_name: str
+
+    @abstractmethod
+    def ensure_collection(
+        self,
+        *,
+        collection_name: str,
+        request: EnsureCollectionRequest,
+        trace_id: str,
+    ) -> EnsureCollectionResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert(
+        self,
+        *,
+        collection_name: str,
+        request: VectorUpsertRequest,
+        trace_id: str,
+    ) -> VectorUpsertResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def query(
+        self,
+        *,
+        collection_name: str,
+        request: VectorQueryRequest,
+        trace_id: str,
+    ) -> VectorQueryResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete(
+        self,
+        *,
+        collection_name: str,
+        request: VectorDeleteRequest,
+        trace_id: str,
+    ) -> VectorDeleteResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def describe_capabilities(self) -> VectorStoreCapabilities:
+        raise NotImplementedError
