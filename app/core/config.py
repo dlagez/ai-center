@@ -160,6 +160,45 @@ class DocumentParseSettings:
 
 
 @dataclass(frozen=True)
+class EmbeddingSettings:
+    embedding_default_logical_model: str
+    embedding_default_public_model: str
+    embedding_timeout_ms: int
+    embedding_batch_size: int
+    embedding_enable_public_proxy: bool
+    embedding_enable_direct_fallback: bool
+    private_embedding_base_url: str | None
+    private_embedding_api_key: str | None
+    private_embedding_model: str | None
+    private_embedding_logical_model: str
+
+    @classmethod
+    def from_env(cls) -> "EmbeddingSettings":
+        return cls(
+            embedding_default_logical_model=os.getenv(
+                "EMBEDDING_DEFAULT_LOGICAL_MODEL", "embedding_default"
+            ),
+            embedding_default_public_model=os.getenv(
+                "EMBEDDING_DEFAULT_PUBLIC_MODEL", "text-embedding-3-small"
+            ),
+            embedding_timeout_ms=_get_int("EMBEDDING_TIMEOUT_MS", 60000),
+            embedding_batch_size=_get_int("EMBEDDING_BATCH_SIZE", 32),
+            embedding_enable_public_proxy=_get_bool(
+                "EMBEDDING_ENABLE_PUBLIC_PROXY", True
+            ),
+            embedding_enable_direct_fallback=_get_bool(
+                "EMBEDDING_ENABLE_DIRECT_FALLBACK", True
+            ),
+            private_embedding_base_url=_get_optional("PRIVATE_EMBEDDING_BASE_URL"),
+            private_embedding_api_key=_get_optional("PRIVATE_EMBEDDING_API_KEY"),
+            private_embedding_model=_get_optional("PRIVATE_EMBEDDING_MODEL"),
+            private_embedding_logical_model=os.getenv(
+                "PRIVATE_EMBEDDING_LOGICAL_MODEL", "private_embedding_backup"
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class ChunkingSettings:
     chunking_default_policy_name: str
     chunking_max_chars: int

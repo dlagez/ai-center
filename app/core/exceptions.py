@@ -126,6 +126,52 @@ class DocumentParseCacheError(DocumentParseError):
     code = "document_parse_cache_error"
 
 
+class EmbeddingError(Exception):
+    code = "embedding_unknown_error"
+    retryable = False
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class EmbeddingConfigurationError(EmbeddingError):
+    code = "embedding_configuration_error"
+
+
+class EmbeddingValidationError(EmbeddingError):
+    code = "embedding_validation_error"
+
+
+class EmbeddingAuthenticationError(EmbeddingError):
+    code = "embedding_authentication_error"
+
+
+class EmbeddingPermissionError(EmbeddingError):
+    code = "embedding_permission_error"
+
+
+class EmbeddingRateLimitError(EmbeddingError):
+    code = "embedding_rate_limit_error"
+    retryable = True
+
+
+class EmbeddingTimeoutError(EmbeddingError):
+    code = "embedding_timeout_error"
+    retryable = True
+
+
+class EmbeddingProviderUnavailableError(EmbeddingError):
+    code = "embedding_provider_unavailable"
+    retryable = True
+
+
+class EmbeddingBadResponseError(EmbeddingError):
+    code = "embedding_bad_response_error"
+    retryable = True
+
+
 class ChunkingError(Exception):
     code = "chunking_unknown_error"
     retryable = False
