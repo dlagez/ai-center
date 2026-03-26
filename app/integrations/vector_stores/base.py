@@ -7,6 +7,8 @@ from app.runtime.retrieval.vector_store.schemas import (
     EnsureCollectionResult,
     VectorDeleteRequest,
     VectorDeleteResult,
+    VectorDocumentLookupRequest,
+    VectorDocumentLookupResult,
     VectorQueryRequest,
     VectorQueryResult,
     VectorStoreCapabilities,
@@ -59,6 +61,16 @@ class BaseVectorStoreAdapter(ABC):
         request: VectorDeleteRequest,
         trace_id: str,
     ) -> VectorDeleteResult:
+        raise NotImplementedError
+
+    @abstractmethod
+    def lookup_document(
+        self,
+        *,
+        collection_name: str,
+        request: VectorDocumentLookupRequest,
+        trace_id: str,
+    ) -> VectorDocumentLookupResult:
         raise NotImplementedError
 
     @abstractmethod

@@ -349,6 +349,7 @@ class KnowledgeIndexService:
             vector_store_trace_id=vector_result.trace_id,
             metadata={
                 **request_metadata,
+                **chunk_result.metadata,
                 "chunk_policy_name": chunk_result.policy_name,
                 "embedding_provider": embedding_result.final_provider,
                 "embedding_model": embedding_result.final_model,

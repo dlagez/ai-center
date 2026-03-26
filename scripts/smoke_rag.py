@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,13 @@ from app.modules.knowledge_center import (  # noqa: E402
     RAGAskRequest,
     build_knowledge_index_service,
     build_simple_rag_service,
+)
+from app.modules.document_center import (  # noqa: E402
+    DocumentParseRequest,
+    build_document_parse_service,
+)
+from app.modules.document_center.repositories.pdf_ocr_checkpoint_repository import (  # noqa: E402
+    PDFOCRCheckpointRepository,
 )
 from app.observability.tracing import get_default_langsmith_tracer  # noqa: E402
 from app.runtime.retrieval import build_default_retriever_service  # noqa: E402
@@ -90,6 +98,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full ingest and ask results as JSON.",
     )
+    parser.add_argument(
+        "--clear-parse-cache",
+        action="store_true",
+        help="Delete the document parse cache and OCR checkpoint files for this source before ingest.",
+    )
+    parser.add_argument(
+        "--show-hit-text-chars",
+        type=int,
+        default=280,
+        help="Number of retrieved chunk text characters to preview in non-JSON mode.",
+    )
     return parser
 
 
@@ -120,6 +139,13 @@ def main() -> int:
     print(f"  chunks: {ingest_result.total_chunks}")
     print(f"  embedded: {ingest_result.embedded_count}")
     print(f"  success_count: {ingest_result.success_count}")
+    print_parse_summary(ingest_result.model_dump(mode="json"))
+    print()
+    print("Retrieval")
+    print(f"  requested_top_k: {args.top_k}")
+    print(f"  score_threshold: {args.score_threshold}")
+    print(f"  returned_hits: {len(rag_result.citations)}")
+    print(f"  retrieval_total_hits: {rag_result.metadata.get('retrieval_total_hits')}")
     print()
     print("Answer")
     print(rag_result.answer)
@@ -128,17 +154,30 @@ def main() -> int:
     if not rag_result.citations:
         print("  (none)")
     else:
-        for citation in rag_result.citations:
+        for index, citation in enumerate(rag_result.citations, start=1):
+            metadata = citation.metadata or {}
             print(
-                "  "
+                f"  [{index}] "
                 f"document_id={citation.document_id} "
                 f"chunk_id={citation.chunk_id} "
                 f"score={citation.score:.4f}"
             )
+            if metadata.get("page_range"):
+                print(f"      page_range={metadata.get('page_range')}")
+            if metadata.get("title_path"):
+                print(f"      title_path={metadata.get('title_path')}")
+            if citation.source_position:
+                print(f"      source_position={citation.source_position}")
+            preview = build_preview(citation.text, args.show_hit_text_chars)
+            if preview:
+                print(f"      text={preview}")
     return 0
 
 
 def run_smoke(args: argparse.Namespace) -> tuple[Any, Any]:
+    if args.clear_parse_cache and args.text is None:
+        clear_parse_cache_for_source(args)
+
     vector_store_service = build_default_vector_store_service()
     try:
         index_service = build_knowledge_index_service(
@@ -217,6 +256,89 @@ def resolve_source(args: argparse.Namespace) -> tuple[str, str, str | None]:
         inferred_name = url_path.name or None
         return "url", args.url, inferred_name
     raise ValueError("Either --file, --url, or --text must be provided.")
+
+
+def clear_parse_cache_for_source(args: argparse.Namespace) -> None:
+    parse_service = build_document_parse_service()
+    request = build_parse_request(args)
+    asset = parse_service._file_identity_service.normalize(request)
+    parser = parse_service._parser_router_service.resolve(asset)
+    cache_key = parse_service._parse_cache_service.build_cache_key(
+        asset=asset,
+        request=request,
+        parser_name=parser.parser_name,
+        parser_version=parser.parser_version,
+    )
+    cache_dir = Path(parse_service._parse_cache_service._settings.document_parse_cache_dir)
+    checkpoint_repository = PDFOCRCheckpointRepository(cache_dir)
+    final_cache_path = cache_dir / f"{cache_key}.json"
+    if final_cache_path.exists():
+        final_cache_path.unlink()
+    partial_dir = checkpoint_repository.partial_dir(cache_key)
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir, ignore_errors=True)
+
+
+def build_parse_request(args: argparse.Namespace) -> DocumentParseRequest:
+    source_type, source_value, inferred_file_name = resolve_source(args)
+    return DocumentParseRequest(
+        tenant_id=args.tenant_id,
+        app_id=args.app_id,
+        scene="knowledge_ingest",
+        source_type=source_type,
+        source_value=source_value,
+        file_name=args.file_name or inferred_file_name,
+        file_type=args.file_type,
+        parse_mode="text",
+    )
+
+
+def print_parse_summary(ingest_result: dict[str, Any]) -> None:
+    metadata = ingest_result.get("metadata") or {}
+    if "document_parse_cache_hit" not in metadata:
+        return
+
+    strategy = metadata.get("document_parse_strategy")
+    cache_hit = metadata.get("document_parse_cache_hit")
+    if cache_hit:
+        execution = "cache"
+    elif strategy == "ocr":
+        execution = "direct_ocr"
+    else:
+        execution = "direct_parse"
+
+    print("Parse")
+    print(f"  execution: {execution}")
+    print(f"  cache_hit: {cache_hit}")
+    print(f"  cache_key: {metadata.get('document_parse_cache_key')}")
+    print(
+        "  parser: "
+        f"{metadata.get('document_parse_parser_name')}"
+        f"@{metadata.get('document_parse_parser_version')}"
+    )
+    print(f"  latency_ms: {metadata.get('document_parse_latency_ms')}")
+    print(f"  strategy: {strategy}")
+    print(f"  provider: {metadata.get('document_parse_provider')}")
+    print(f"  model: {metadata.get('document_parse_model')}")
+    print(f"  page_count: {metadata.get('document_parse_page_count')}")
+    if strategy == "ocr":
+        print(f"  ocr_mode: {metadata.get('document_parse_ocr_mode')}")
+        print(f"  ocr_batch_count: {metadata.get('document_parse_ocr_batch_count')}")
+        print(f"  ocr_total_pages: {metadata.get('document_parse_ocr_total_pages')}")
+        print(f"  ocr_retry_count: {metadata.get('document_parse_ocr_retry_count')}")
+        print(
+            "  ocr_resumed_batch_count: "
+            f"{metadata.get('document_parse_ocr_resumed_batch_count')}"
+        )
+
+
+def build_preview(text: str | None, max_chars: int) -> str:
+    if not text or max_chars <= 0:
+        return ""
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip() + "..."
 
 
 def infer_document_id(args: argparse.Namespace) -> str:

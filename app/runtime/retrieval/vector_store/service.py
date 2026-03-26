@@ -29,6 +29,8 @@ from app.runtime.retrieval.vector_store.schemas import (
     EnsureCollectionResult,
     VectorDeleteRequest,
     VectorDeleteResult,
+    VectorDocumentLookupRequest,
+    VectorDocumentLookupResult,
     VectorQueryRequest,
     VectorQueryResult,
     VectorRecord,
@@ -385,6 +387,67 @@ class VectorStoreService:
                     collection_name=collection_name,
                     error=error,
                 )
+                raise error
+
+    def lookup_document(
+        self,
+        request: VectorDocumentLookupRequest,
+    ) -> VectorDocumentLookupResult:
+        trace_id = uuid.uuid4().hex
+        collection_name = self.build_collection_name(
+            tenant_id=request.tenant_id,
+            app_id=request.app_id,
+            knowledge_base_id=request.knowledge_base_id,
+            index_name=request.index_name,
+            index_version=request.index_version,
+        )
+        adapter = self._get_adapter()
+        with self._tracer.trace(
+            name="vector_store.lookup_document",
+            run_type="tool",
+            inputs={
+                "tenant_id": request.tenant_id,
+                "app_id": request.app_id,
+                "knowledge_base_id": request.knowledge_base_id,
+                "index_name": request.index_name,
+                "index_version": request.index_version,
+                "document_id": request.document_id,
+            },
+            metadata={
+                "tenant_id": request.tenant_id,
+                "app_id": request.app_id,
+                "knowledge_base_id": request.knowledge_base_id,
+                "index_name": request.index_name,
+                "index_version": request.index_version,
+                "document_id": request.document_id,
+                "collection_name": collection_name,
+                "provider": adapter.provider_name,
+                "app_trace_id": trace_id,
+                **request.metadata,
+            },
+        ) as trace_run:
+            try:
+                result = adapter.lookup_document(
+                    collection_name=collection_name,
+                    request=request,
+                    trace_id=trace_id,
+                )
+                trace_run.end(
+                    outputs={
+                        "trace_id": result.trace_id,
+                        "provider": result.provider,
+                        "collection_name": result.collection_name,
+                        "document_id": result.document_id,
+                        "exists": result.exists,
+                        "chunk_count": result.chunk_count,
+                        "latency_ms": result.latency_ms,
+                        "metadata": dict(result.metadata),
+                    }
+                )
+                return result
+            except Exception as exc:
+                error = self._to_vector_store_error(exc)
+                trace_run.metadata.update({"error_code": error.code})
                 raise error
 
     def build_collection_name(

@@ -22,6 +22,8 @@ from app.runtime.retrieval.vector_store.schemas import (
     MetricType,
     VectorDeleteRequest,
     VectorDeleteResult,
+    VectorDocumentLookupRequest,
+    VectorDocumentLookupResult,
     VectorHit,
     VectorQueryRequest,
     VectorQueryResult,
@@ -240,6 +242,54 @@ class LocalFileVectorStoreAdapter(BaseVectorStoreAdapter):
             collection_name=collection_name,
             requested_count=requested_count,
             deleted_count=deleted_count,
+            latency_ms=latency_ms,
+        )
+
+    def lookup_document(
+        self,
+        *,
+        collection_name: str,
+        request: VectorDocumentLookupRequest,
+        trace_id: str,
+    ) -> VectorDocumentLookupResult:
+        start_time = time.perf_counter()
+        path = self._collection_path(collection_name)
+        if not path.exists():
+            latency_ms = int((time.perf_counter() - start_time) * 1000)
+            return VectorDocumentLookupResult(
+                trace_id=trace_id,
+                provider=self.provider_name,
+                collection_name=collection_name,
+                document_id=request.document_id,
+                exists=False,
+                chunk_count=0,
+                latency_ms=latency_ms,
+            )
+
+        with self._collection_lock(collection_name):
+            payload = self._read_collection(path, collection_name=collection_name)
+            raw_records = payload.get("records", {})
+
+        chunk_count = 0
+        metadata: dict[str, Any] = {}
+        for item in raw_records.values():
+            if not isinstance(item, dict):
+                continue
+            if item.get("document_id") != request.document_id:
+                continue
+            chunk_count += 1
+            if not metadata:
+                metadata = dict(item.get("metadata") or {})
+
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
+        return VectorDocumentLookupResult(
+            trace_id=trace_id,
+            provider=self.provider_name,
+            collection_name=collection_name,
+            document_id=request.document_id,
+            exists=chunk_count > 0,
+            chunk_count=chunk_count,
+            metadata=metadata,
             latency_ms=latency_ms,
         )
 

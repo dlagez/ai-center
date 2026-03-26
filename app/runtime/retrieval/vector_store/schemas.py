@@ -115,3 +115,24 @@ class VectorDeleteResult(BaseModel):
     requested_count: int
     deleted_count: int
     latency_ms: int
+
+
+class VectorDocumentLookupRequest(BaseModel):
+    tenant_id: str
+    app_id: str
+    knowledge_base_id: str
+    index_name: str
+    index_version: str
+    document_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class VectorDocumentLookupResult(BaseModel):
+    trace_id: str
+    provider: str
+    collection_name: str
+    document_id: str
+    exists: bool
+    chunk_count: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    latency_ms: int

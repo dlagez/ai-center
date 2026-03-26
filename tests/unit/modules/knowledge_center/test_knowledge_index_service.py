@@ -117,7 +117,12 @@ class KnowledgeIndexServiceTestCase(unittest.TestCase):
             source_type="file_path",
             file_name="sample.md",
             file_type="md",
-            metadata={},
+            metadata={
+                "document_parse_cache_hit": False,
+                "document_parse_strategy": "ocr",
+                "document_parse_ocr_mode": "batched",
+                "document_parse_ocr_batch_count": 2,
+            },
             latency_ms=1,
         )
         self.embedding_result = EmbeddingBatchResult(
@@ -183,6 +188,9 @@ class KnowledgeIndexServiceTestCase(unittest.TestCase):
             upsert_request.records[0].metadata["source_positions"][0]["block_id"],
             "page:1:segment:1",
         )
+        self.assertFalse(result.metadata["document_parse_cache_hit"])
+        self.assertEqual(result.metadata["document_parse_strategy"], "ocr")
+        self.assertEqual(result.metadata["document_parse_ocr_mode"], "batched")
 
     def test_ingest_raw_text_uses_chunk_raw_text(self) -> None:
         result = self.service.ingest_raw_text(

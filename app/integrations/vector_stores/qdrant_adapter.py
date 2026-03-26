@@ -44,6 +44,8 @@ from app.runtime.retrieval.vector_store.schemas import (
     EnsureCollectionResult,
     VectorDeleteRequest,
     VectorDeleteResult,
+    VectorDocumentLookupRequest,
+    VectorDocumentLookupResult,
     VectorHit,
     VectorQueryRequest,
     VectorQueryResult,
@@ -253,6 +255,72 @@ class QdrantVectorStoreAdapter(BaseVectorStoreAdapter):
             collection_name=collection_name,
             requested_count=requested_count,
             deleted_count=len(point_ids),
+            latency_ms=latency_ms,
+        )
+
+    def lookup_document(
+        self,
+        *,
+        collection_name: str,
+        request: VectorDocumentLookupRequest,
+        trace_id: str,
+    ) -> VectorDocumentLookupResult:
+        start_time = time.perf_counter()
+        try:
+            if not self._client.collection_exists(collection_name):
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
+                return VectorDocumentLookupResult(
+                    trace_id=trace_id,
+                    provider=self.provider_name,
+                    collection_name=collection_name,
+                    document_id=request.document_id,
+                    exists=False,
+                    chunk_count=0,
+                    latency_ms=latency_ms,
+                )
+        except Exception as exc:
+            raise self._map_exception(exc, operation="query") from exc
+
+        query_filter = self._build_filter({"document_id": request.document_id})
+        metadata: dict[str, Any] = {}
+        chunk_count = 0
+        offset = None
+        while True:
+            try:
+                records, offset = self._client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=query_filter,
+                    limit=256,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                    timeout=self._timeout_seconds,
+                )
+            except Exception as exc:
+                raise self._map_exception(exc, operation="query") from exc
+
+            for record in records:
+                payload = dict(getattr(record, "payload", {}) or {})
+                if str(payload.get("document_id") or "") != request.document_id:
+                    continue
+                chunk_count += 1
+                if not metadata:
+                    payload.pop("text", None)
+                    payload.pop("chunk_id", None)
+                    payload.pop("document_id", None)
+                    metadata = payload
+            if offset is None:
+                break
+
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
+        return VectorDocumentLookupResult(
+            trace_id=trace_id,
+            provider=self.provider_name,
+            collection_name=collection_name,
+            document_id=request.document_id,
+            exists=chunk_count > 0,
+            chunk_count=chunk_count,
+            metadata=metadata,
             latency_ms=latency_ms,
         )
 
