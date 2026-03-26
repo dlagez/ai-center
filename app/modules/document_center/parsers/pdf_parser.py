@@ -27,7 +27,7 @@ TEXT_LITERAL_PATTERN = re.compile(r"\((?:\\.|[^\\()])*\)")
 
 class PDFDocumentParser(BaseDocumentParser):
     parser_name = "pdf_document_parser"
-    parser_version = "v2"
+    parser_version = "v3"
     supported_file_types = ("pdf",)
 
     def __init__(
@@ -45,6 +45,7 @@ class PDFDocumentParser(BaseDocumentParser):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ):
         pages = self._extract_text_pages(asset.content_bytes)
         if request.page_range:
@@ -67,6 +68,7 @@ class PDFDocumentParser(BaseDocumentParser):
             request=request,
             asset=asset,
             trace_id=trace_id,
+            cache_key=cache_key,
         )
         response = execution.response
         locations = [
@@ -89,6 +91,7 @@ class PDFDocumentParser(BaseDocumentParser):
                 "ocr_total_pages": execution.total_pages,
                 "ocr_retry_count": execution.retry_count,
                 "ocr_retried_batch_count": execution.retried_batch_count,
+                "ocr_resumed_batch_count": execution.resumed_batch_count,
             },
             provider=response.provider,
             model=response.model,
@@ -101,6 +104,7 @@ class PDFDocumentParser(BaseDocumentParser):
         request: DocumentParseRequest,
         asset: NormalizedDocumentAsset,
         trace_id: str,
+        cache_key: str | None,
     ) -> PDFOCRExecutionResult:
         if self._pdf_ocr_batching_service is None:
             response = self._ocr_service.extract_text(
@@ -122,6 +126,9 @@ class PDFDocumentParser(BaseDocumentParser):
             asset=asset,
             trace_id=trace_id,
             ocr_service=self._ocr_service,
+            cache_key=cache_key,
+            parser_name=self.parser_name,
+            parser_version=self.parser_version,
         )
 
     def _extract_text_pages(self, content: bytes) -> list[OCRPage]:

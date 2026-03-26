@@ -26,7 +26,9 @@ class PPTXDocumentParser(BaseDocumentParser):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ):
+        del cache_key
         try:
             with ZipFile(self._to_buffer(asset.content_bytes)) as archive:
                 slide_names = sorted(

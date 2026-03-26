@@ -22,7 +22,9 @@ class ImageDocumentParser(BaseDocumentParser):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ):
+        del cache_key
         response = self._ocr_service.extract_text(
             request=request,
             asset=asset,

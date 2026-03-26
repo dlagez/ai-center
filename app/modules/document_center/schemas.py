@@ -51,6 +51,59 @@ class DocumentParseResult(BaseModel):
     raw_response: dict[str, Any] | None = None
 
 
+class PDFOCRBatchManifestEntry(BaseModel):
+    batch_index: int
+    page_range: list[int] = Field(default_factory=list)
+    output_file: str
+    status: Literal["pending", "running", "completed", "failed"] = "pending"
+    attempt_count: int = 0
+    error_code: str | None = None
+
+
+class PDFOCRCheckpointManifest(BaseModel):
+    cache_key: str
+    state: Literal["running", "completed", "failed"] = "running"
+    parser_name: str
+    parser_version: str
+    provider: str | None = None
+    file_name: str
+    file_type: str
+    asset_hash: str
+    requested_page_range: list[int] | None = None
+    target_pages: list[int] = Field(default_factory=list)
+    batch_size: int
+    batch_count: int
+    completed_batch_count: int = 0
+    created_at: str
+    updated_at: str
+    batches: list[PDFOCRBatchManifestEntry] = Field(default_factory=list)
+
+
+class PDFOCRBatchProgress(BaseModel):
+    state: Literal["running", "completed", "failed"] = "running"
+    total_batches: int
+    completed_batches: int = 0
+    failed_batches: int = 0
+    current_batch_index: int | None = None
+    current_page_range: list[int] | None = None
+    percent: float = 0.0
+    updated_at: str
+
+
+class PDFOCRBatchCheckpoint(BaseModel):
+    batch_index: int
+    page_range: list[int] = Field(default_factory=list)
+    provider: str
+    model: str | None = None
+    attempt_count: int = 1
+    started_at: str
+    finished_at: str
+    pages: list[OCRPage] = Field(default_factory=list)
+    text: str
+    usage: dict[str, Any] = Field(default_factory=dict)
+    raw_response: dict[str, Any] | None = None
+
+
 @dataclass(frozen=True)
 class NormalizedDocumentAsset:
     source_type: str

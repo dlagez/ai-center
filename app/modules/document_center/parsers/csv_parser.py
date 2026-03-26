@@ -21,7 +21,9 @@ class CSVDocumentParser(BaseDocumentParser):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ):
+        del cache_key
         text_content = decode_text_bytes(asset.content_bytes)
         reader = csv.reader(StringIO(text_content))
         row_payloads: list[dict[str, object]] = []

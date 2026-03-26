@@ -27,6 +27,7 @@ class BaseDocumentParser(ABC):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ) -> DocumentParseResult:
         raise NotImplementedError
 

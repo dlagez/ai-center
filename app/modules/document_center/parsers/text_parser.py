@@ -18,6 +18,8 @@ class TextDocumentParser(BaseDocumentParser):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ):
+        del cache_key
         text = normalize_text(decode_text_bytes(asset.content_bytes))
         return self.build_result(trace_id=trace_id, asset=asset, text=text)

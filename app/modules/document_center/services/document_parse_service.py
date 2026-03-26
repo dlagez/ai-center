@@ -16,10 +16,16 @@ from app.modules.document_center.parsers import (
     XLSXDocumentParser,
 )
 from app.modules.document_center.repositories import ParseCacheRepository
+from app.modules.document_center.repositories.pdf_ocr_checkpoint_repository import (
+    PDFOCRCheckpointRepository,
+)
 from app.modules.document_center.schemas import DocumentParseRequest, DocumentParseResult
 from app.modules.document_center.services.file_identity_service import FileIdentityService
 from app.modules.document_center.services.ocr_execution_service import OCRExecutionService
 from app.modules.document_center.services.parse_cache_service import ParseCacheService
+from app.modules.document_center.services.pdf_batch_asset_service import (
+    PDFBatchAssetService,
+)
 from app.modules.document_center.services.pdf_ocr_batching_service import (
     PDFOCRBatchingService,
 )
@@ -70,7 +76,12 @@ class DocumentParseService:
                 )
 
             trace_id = uuid.uuid4().hex
-            parsed = parser.parse(request, asset, trace_id=trace_id)
+            parsed = parser.parse(
+                request,
+                asset,
+                trace_id=trace_id,
+                cache_key=cache_key,
+            )
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             result = parsed.model_copy(
                 update={
@@ -106,8 +117,14 @@ def build_document_parse_service(
         settings=document_parse_settings,
     )
     ocr_service = OCRExecutionService(settings=ocr_settings, adapters=adapters)
+    pdf_ocr_checkpoint_repository = PDFOCRCheckpointRepository(
+        document_parse_settings.document_parse_cache_dir
+    )
+    pdf_batch_asset_service = PDFBatchAssetService()
     pdf_ocr_batching_service = PDFOCRBatchingService(
         ocr_settings,
+        checkpoint_repository=pdf_ocr_checkpoint_repository,
+        batch_asset_service=pdf_batch_asset_service,
         tracer=get_default_langsmith_tracer(),
     )
     parser_router_service = ParserRouterService(

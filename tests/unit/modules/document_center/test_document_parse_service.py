@@ -7,17 +7,26 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
+from pypdf import PdfWriter
+
 from app.core.config import DocumentParseSettings, OCRSettings
 from app.core.exceptions import OCRToolTimeoutError
 from app.integrations.ocr_providers.base import BaseOCRProviderAdapter
 from app.modules.document_center import DocumentParseRequest, build_document_parse_service
-from app.modules.document_center.repositories import ParseCacheRepository
+from app.modules.document_center.repositories import (
+    PDFOCRCheckpointRepository,
+    ParseCacheRepository,
+)
+from app.modules.document_center.schemas import (
+    PDFOCRBatchCheckpoint,
+    PDFOCRBatchManifestEntry,
+    PDFOCRCheckpointManifest,
+)
 from app.runtime.tools.schemas import OCRPage, OCRProviderResponse, OCRToolRequest
 
 
 class FakeOCRAdapter(BaseOCRProviderAdapter):
     provider_name = "fake_ocr"
-    supports_pdf_page_range = True
 
     def __init__(
         self,
@@ -176,12 +185,19 @@ class DocumentParseServiceTestCase(unittest.TestCase):
 
         self.assertEqual(self.fake_ocr.calls, 3)
         self.assertEqual(
-            [request.page_range for request in self.fake_ocr.requests],
+            [
+                request.metadata.get("pdf_batch_page_range")
+                for request in self.fake_ocr.requests
+            ],
             [
                 list(range(1, 11)),
                 list(range(11, 21)),
                 [21, 22, 23],
             ],
+        )
+        self.assertTrue(all(request.page_range is None for request in self.fake_ocr.requests))
+        self.assertTrue(
+            all(request.source_type == "base64" for request in self.fake_ocr.requests)
         )
         self.assertEqual(result.metadata["strategy"], "ocr")
         self.assertEqual(result.metadata["ocr_mode"], "batched")
@@ -202,7 +218,9 @@ class DocumentParseServiceTestCase(unittest.TestCase):
         attempts_by_batch: dict[tuple[int, ...], int] = {}
 
         def flaky_response_builder(request: OCRToolRequest) -> OCRProviderResponse:
-            page_range = tuple(request.page_range or [1])
+            page_range = tuple(
+                request.metadata.get("pdf_batch_page_range") or [1]
+            )
             attempts_by_batch[page_range] = attempts_by_batch.get(page_range, 0) + 1
             if page_range == tuple(range(1, 11)) and attempts_by_batch[page_range] == 1:
                 raise OCRToolTimeoutError("temporary timeout")
@@ -226,17 +244,132 @@ class DocumentParseServiceTestCase(unittest.TestCase):
 
         self.assertEqual(self.fake_ocr.calls, 3)
         self.assertEqual(
-            [request.page_range for request in self.fake_ocr.requests],
+            [
+                request.metadata.get("pdf_batch_page_range")
+                for request in self.fake_ocr.requests
+            ],
             [
                 list(range(1, 11)),
                 list(range(1, 11)),
                 [11, 12],
             ],
         )
+        self.assertTrue(all(request.page_range is None for request in self.fake_ocr.requests))
         self.assertEqual(result.metadata["ocr_mode"], "batched")
         self.assertEqual(result.metadata["ocr_retry_count"], 1)
         self.assertEqual(result.metadata["ocr_retried_batch_count"], 1)
         self.assertIn("page 12", result.text)
+
+    def test_document_parse_service_resumes_pdf_ocr_from_saved_batch_json(self) -> None:
+        self.fake_ocr = FakeOCRAdapter(response_builder=self._build_dynamic_pdf_ocr_response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parse_settings = DocumentParseSettings(
+                document_parse_cache_dir=str(Path(temp_dir) / "cache"),
+                document_parse_enable_cache=True,
+                document_parse_download_timeout_ms=1000,
+            )
+            repository = ParseCacheRepository(parse_settings.document_parse_cache_dir)
+            service = build_document_parse_service(
+                ocr_settings=self.ocr_settings,
+                document_parse_settings=parse_settings,
+                adapters={"fake_ocr": self.fake_ocr},
+                repository=repository,
+            )
+            pdf_path = Path(temp_dir) / "resume.pdf"
+            pdf_path.write_bytes(self._build_scanned_pdf_bytes(page_count=23))
+            request = DocumentParseRequest(
+                tenant_id="tenant-a",
+                app_id="app-a",
+                scene="knowledge_ingest",
+                source_type="file_path",
+                source_value=str(pdf_path),
+            )
+
+            asset = service._file_identity_service.normalize(request)
+            parser = service._parser_router_service.resolve(asset)
+            cache_key = service._parse_cache_service.build_cache_key(
+                asset=asset,
+                request=request,
+                parser_name=parser.parser_name,
+                parser_version=parser.parser_version,
+            )
+            checkpoint_repository = PDFOCRCheckpointRepository(
+                parse_settings.document_parse_cache_dir
+            )
+            now = "2026-03-26T00:00:00+00:00"
+            manifest = PDFOCRCheckpointManifest(
+                cache_key=cache_key,
+                state="running",
+                parser_name=parser.parser_name,
+                parser_version=parser.parser_version,
+                provider="fake_ocr",
+                file_name=asset.file_name,
+                file_type=asset.file_type,
+                asset_hash=asset.asset_hash,
+                requested_page_range=None,
+                target_pages=list(range(1, 24)),
+                batch_size=10,
+                batch_count=3,
+                completed_batch_count=1,
+                created_at=now,
+                updated_at=now,
+                batches=[
+                    PDFOCRBatchManifestEntry(
+                        batch_index=1,
+                        page_range=list(range(1, 11)),
+                        output_file="batch-0001-pages-1-10.json",
+                        status="completed",
+                        attempt_count=1,
+                    ),
+                    PDFOCRBatchManifestEntry(
+                        batch_index=2,
+                        page_range=list(range(11, 21)),
+                        output_file="batch-0002-pages-11-20.json",
+                    ),
+                    PDFOCRBatchManifestEntry(
+                        batch_index=3,
+                        page_range=[21, 22, 23],
+                        output_file="batch-0003-pages-21-23.json",
+                    ),
+                ],
+            )
+            checkpoint_repository.save_manifest(cache_key, manifest)
+            checkpoint_repository.save_batch(
+                cache_key,
+                "batch-0001-pages-1-10.json",
+                PDFOCRBatchCheckpoint(
+                    batch_index=1,
+                    page_range=list(range(1, 11)),
+                    provider="fake_ocr",
+                    model="ocr-v1",
+                    attempt_count=1,
+                    started_at=now,
+                    finished_at=now,
+                    pages=[
+                        OCRPage(page_no=page_no, text=f"page {page_no}")
+                        for page_no in range(1, 11)
+                    ],
+                    text="\n\n".join(f"page {page_no}" for page_no in range(1, 11)),
+                    usage={"pages": 10, "requests": 1},
+                ),
+            )
+
+            result = service.parse(request)
+
+        self.assertEqual(self.fake_ocr.calls, 2)
+        self.assertEqual(
+            [
+                request.metadata.get("pdf_batch_page_range")
+                for request in self.fake_ocr.requests
+            ],
+            [
+                list(range(11, 21)),
+                [21, 22, 23],
+            ],
+        )
+        self.assertEqual(result.metadata["ocr_resumed_batch_count"], 1)
+        self.assertIn("page 1", result.text)
+        self.assertIn("page 23", result.text)
 
     def test_document_parse_service_parses_docx_pptx_and_xlsx_locations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -311,7 +444,7 @@ class DocumentParseServiceTestCase(unittest.TestCase):
 
     @staticmethod
     def _build_dynamic_pdf_ocr_response(request: OCRToolRequest) -> OCRProviderResponse:
-        page_range = request.page_range or [1]
+        page_range = request.metadata.get("pdf_batch_page_range") or request.page_range or [1]
         pages = [
             OCRPage(
                 page_no=index,
@@ -342,16 +475,12 @@ class DocumentParseServiceTestCase(unittest.TestCase):
 
     @staticmethod
     def _build_scanned_pdf_bytes(page_count: int) -> bytes:
-        pages = b"".join(
-            f"{index + 2} 0 obj\n<< /Type /Page /Parent 1 0 R >>\nendobj\n".encode("ascii")
-            for index in range(page_count)
-        )
-        return (
-            b"%PDF-1.4\n"
-            + f"1 0 obj\n<< /Type /Pages /Count {page_count} >>\nendobj\n".encode("ascii")
-            + pages
-            + b"%%EOF"
-        )
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=612, height=792)
+        buffer = BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
 
     @staticmethod
     def _build_docx_bytes(paragraphs: list[str]) -> bytes:

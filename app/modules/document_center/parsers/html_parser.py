@@ -62,7 +62,9 @@ class HTMLDocumentParser(BaseDocumentParser):
         asset: NormalizedDocumentAsset,
         *,
         trace_id: str,
+        cache_key: str | None = None,
     ):
+        del cache_key
         extractor = _HTMLTextExtractor()
         extractor.feed(decode_text_bytes(asset.content_bytes))
         text = normalize_text(extractor.get_text())
