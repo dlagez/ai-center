@@ -8,6 +8,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from app.core.config import DocumentParseSettings, OCRSettings
+from app.core.exceptions import OCRToolTimeoutError
 from app.integrations.ocr_providers.base import BaseOCRProviderAdapter
 from app.modules.document_center import DocumentParseRequest, build_document_parse_service
 from app.modules.document_center.repositories import ParseCacheRepository
@@ -170,6 +171,46 @@ class DocumentParseServiceTestCase(unittest.TestCase):
         )
         self.assertIn("page 1", result.text)
         self.assertIn("page 23", result.text)
+
+    def test_document_parse_service_retries_retryable_pdf_batches(self) -> None:
+        attempts_by_batch: dict[tuple[int, ...], int] = {}
+
+        def flaky_response_builder(request: OCRToolRequest) -> OCRProviderResponse:
+            page_range = tuple(request.page_range or [1])
+            attempts_by_batch[page_range] = attempts_by_batch.get(page_range, 0) + 1
+            if page_range == tuple(range(1, 11)) and attempts_by_batch[page_range] == 1:
+                raise OCRToolTimeoutError("temporary timeout")
+            return self._build_dynamic_pdf_ocr_response(request)
+
+        self.fake_ocr = FakeOCRAdapter(response_builder=flaky_response_builder)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self._build_service(temp_dir)
+            pdf_path = Path(temp_dir) / "retry.pdf"
+            pdf_path.write_bytes(self._build_scanned_pdf_bytes(page_count=12))
+
+            result = service.parse(
+                DocumentParseRequest(
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    scene="knowledge_ingest",
+                    source_type="file_path",
+                    source_value=str(pdf_path),
+                )
+            )
+
+        self.assertEqual(self.fake_ocr.calls, 3)
+        self.assertEqual(
+            [request.page_range for request in self.fake_ocr.requests],
+            [
+                list(range(1, 11)),
+                list(range(1, 11)),
+                [11, 12],
+            ],
+        )
+        self.assertEqual(result.metadata["ocr_mode"], "batched")
+        self.assertEqual(result.metadata["ocr_retry_count"], 1)
+        self.assertEqual(result.metadata["ocr_retried_batch_count"], 1)
+        self.assertIn("page 12", result.text)
 
     def test_document_parse_service_parses_docx_pptx_and_xlsx_locations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

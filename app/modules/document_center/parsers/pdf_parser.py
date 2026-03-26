@@ -85,6 +85,8 @@ class PDFDocumentParser(BaseDocumentParser):
                 "ocr_batch_count": execution.batch_count,
                 "ocr_batch_page_ranges": execution.batch_page_ranges,
                 "ocr_total_pages": execution.total_pages,
+                "ocr_retry_count": execution.retry_count,
+                "ocr_retried_batch_count": execution.retried_batch_count,
             },
             provider=response.provider,
             model=response.model,

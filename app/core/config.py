@@ -135,6 +135,8 @@ class OCRSettings:
     ocr_pdf_batch_enabled: bool = True
     ocr_pdf_batch_pages: int = 10
     ocr_pdf_batch_min_total_pages: int = 11
+    ocr_pdf_batch_max_retries: int = 2
+    ocr_pdf_batch_retry_delay_ms: int = 500
 
     @classmethod
     def from_env(cls) -> "OCRSettings":
@@ -151,6 +153,10 @@ class OCRSettings:
             ocr_pdf_batch_pages=_get_int("OCR_PDF_BATCH_PAGES", 10),
             ocr_pdf_batch_min_total_pages=_get_int(
                 "OCR_PDF_BATCH_MIN_TOTAL_PAGES", 11
+            ),
+            ocr_pdf_batch_max_retries=_get_int("OCR_PDF_BATCH_MAX_RETRIES", 2),
+            ocr_pdf_batch_retry_delay_ms=_get_int(
+                "OCR_PDF_BATCH_RETRY_DELAY_MS", 500
             ),
         )
 

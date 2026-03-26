@@ -23,6 +23,7 @@ from app.modules.document_center.services.parse_cache_service import ParseCacheS
 from app.modules.document_center.services.pdf_ocr_batching_service import (
     PDFOCRBatchingService,
 )
+from app.observability.tracing import get_default_langsmith_tracer
 from app.modules.document_center.services.parser_router_service import ParserRouterService
 
 
@@ -105,7 +106,10 @@ def build_document_parse_service(
         settings=document_parse_settings,
     )
     ocr_service = OCRExecutionService(settings=ocr_settings, adapters=adapters)
-    pdf_ocr_batching_service = PDFOCRBatchingService(ocr_settings)
+    pdf_ocr_batching_service = PDFOCRBatchingService(
+        ocr_settings,
+        tracer=get_default_langsmith_tracer(),
+    )
     parser_router_service = ParserRouterService(
         [
             PDFDocumentParser(
