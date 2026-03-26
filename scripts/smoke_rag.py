@@ -232,3 +232,7 @@ def infer_document_id(args: argparse.Namespace) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# .\.venv\Scripts\python.exe .\scripts\smoke_rag.py `
+#   --file "D:\code-ai\ai-center\data\uploads\doc\关于清明节机房安全巡检工作部署.docx" `
+#   --question "这份文件主要讲了什么？"

@@ -17,6 +17,7 @@ from app.runtime.tools.schemas import OCRPage, OCRProviderResponse, OCRToolReque
 
 class FakeOCRAdapter(BaseOCRProviderAdapter):
     provider_name = "fake_ocr"
+    supports_pdf_page_range = True
 
     def __init__(
         self,
@@ -109,6 +110,31 @@ class DocumentParseServiceTestCase(unittest.TestCase):
         self.assertEqual(result.metadata["strategy"], "text_layer")
         self.assertEqual([location.page_no for location in result.locations], [1])
         self.assertEqual(self.fake_ocr.calls, 0)
+
+    def test_document_parse_service_falls_back_to_ocr_for_garbled_pdf_text_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self._build_service(temp_dir)
+            pdf_path = Path(temp_dir) / "garbled.pdf"
+            pdf_path.write_bytes(
+                self._build_pdf_bytes(
+                    "\x9c\xe8\xd4a\xcfS\xd4\xdd>\x1e57\xdc\xa2\x00\xb6\xbbin!0"
+                )
+            )
+
+            result = service.parse(
+                DocumentParseRequest(
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    scene="knowledge_ingest",
+                    source_type="file_path",
+                    source_value=str(pdf_path),
+                )
+            )
+
+        self.assertEqual(result.text, "ocr result")
+        self.assertEqual(result.metadata["strategy"], "ocr")
+        self.assertEqual(result.provider, "fake_ocr")
+        self.assertEqual(self.fake_ocr.calls, 1)
 
     def test_document_parse_service_falls_back_to_ocr_for_images(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

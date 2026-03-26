@@ -70,6 +70,10 @@ class FakeOCRExecutionService:
         )
         self.calls: list[list[int] | None] = []
 
+    def supports_pdf_page_range(self, provider_name: str | None = None) -> bool:
+        del provider_name
+        return True
+
     def extract_text(
         self,
         *,

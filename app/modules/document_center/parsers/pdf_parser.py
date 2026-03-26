@@ -27,6 +27,7 @@ TEXT_LITERAL_PATTERN = re.compile(r"\((?:\\.|[^\\()])*\)")
 
 class PDFDocumentParser(BaseDocumentParser):
     parser_name = "pdf_document_parser"
+    parser_version = "v2"
     supported_file_types = ("pdf",)
 
     def __init__(
@@ -49,6 +50,7 @@ class PDFDocumentParser(BaseDocumentParser):
         if request.page_range:
             page_range = set(request.page_range)
             pages = [page for page in pages if page.page_no in page_range]
+        pages = [page for page in pages if self._is_meaningful_text(page.text)]
         text = "\n\n".join(page.text for page in pages if page.text).strip()
 
         if text:
@@ -211,3 +213,79 @@ class PDFDocumentParser(BaseDocumentParser):
             except ValueError:
                 result.append(octal)
         return "".join(result)
+
+    def _is_meaningful_text(self, text: str) -> bool:
+        normalized = normalize_text(text)
+        if not normalized:
+            return False
+
+        meaningful_chars = 0
+        suspicious_chars = 0
+        content_chars = 0
+
+        for char in normalized:
+            if char.isspace():
+                continue
+            content_chars += 1
+            code_point = ord(char)
+            if self._is_suspicious_char(char, code_point):
+                suspicious_chars += 1
+                continue
+            if self._is_meaningful_char(char, code_point):
+                meaningful_chars += 1
+
+        if content_chars == 0:
+            return False
+        if suspicious_chars > max(2, content_chars // 20):
+            return False
+        return meaningful_chars / content_chars >= 0.6
+
+    @staticmethod
+    def _is_suspicious_char(char: str, code_point: int) -> bool:
+        if code_point < 32 and char not in {"\n", "\r", "\t"}:
+            return True
+        if 0x7F <= code_point <= 0x9F:
+            return True
+        return False
+
+    @staticmethod
+    def _is_meaningful_char(char: str, code_point: int) -> bool:
+        if char.isascii():
+            return char.isalnum() or char in {
+                "#",
+                "*",
+                "-",
+                "_",
+                "|",
+                ".",
+                ",",
+                ":",
+                ";",
+                "(",
+                ")",
+                "[",
+                "]",
+                "{",
+                "}",
+                "/",
+                "\\",
+                "'",
+                '"',
+                "!",
+                "?",
+                "@",
+                "&",
+                "%",
+                "+",
+                "=",
+                "<",
+                ">",
+                "~",
+                "`",
+            }
+        return (
+            0x4E00 <= code_point <= 0x9FFF
+            or 0x3400 <= code_point <= 0x4DBF
+            or 0x3000 <= code_point <= 0x303F
+            or 0xFF00 <= code_point <= 0xFFEF
+        )

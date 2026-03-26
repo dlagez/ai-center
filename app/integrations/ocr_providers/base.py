@@ -27,6 +27,7 @@ from app.runtime.tools.schemas import (
 
 class BaseOCRProviderAdapter(ABC):
     provider_name: str
+    supports_pdf_page_range: bool = False
 
     @abstractmethod
     def extract_text(

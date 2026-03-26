@@ -65,6 +65,10 @@ class PDFOCRBatchingService:
                 else None,
                 "target_page_count": len(target_pages) or None,
                 "batching_enabled": self._settings.ocr_pdf_batch_enabled,
+                "provider_supports_page_range": self._supports_batching_provider(
+                    ocr_service,
+                    provider_name=provider_name,
+                ),
                 "batch_size": self._settings.ocr_pdf_batch_pages,
                 "max_retries": self._settings.ocr_pdf_batch_max_retries,
             },
@@ -75,7 +79,11 @@ class PDFOCRBatchingService:
             },
         ) as root_run:
             try:
-                if not self._should_batch(target_pages):
+                if not self._should_batch(
+                    target_pages,
+                    ocr_service=ocr_service,
+                    provider_name=provider_name,
+                ):
                     response = ocr_service.extract_text(
                         request=request,
                         asset=asset,
@@ -177,14 +185,33 @@ class PDFOCRBatchingService:
         page_object_count = len(_PAGE_OBJECT_PATTERN.findall(content))
         return page_object_count or None
 
-    def _should_batch(self, target_pages: list[int]) -> bool:
+    def _should_batch(
+        self,
+        target_pages: list[int],
+        *,
+        ocr_service: OCRExecutionService,
+        provider_name: str,
+    ) -> bool:
         if not self._settings.ocr_pdf_batch_enabled:
+            return False
+        if not self._supports_batching_provider(
+            ocr_service,
+            provider_name=provider_name,
+        ):
             return False
         if self._settings.ocr_pdf_batch_pages <= 0:
             return False
         if len(target_pages) < self._settings.ocr_pdf_batch_min_total_pages:
             return False
         return len(target_pages) > self._settings.ocr_pdf_batch_pages
+
+    @staticmethod
+    def _supports_batching_provider(
+        ocr_service: OCRExecutionService,
+        *,
+        provider_name: str,
+    ) -> bool:
+        return ocr_service.supports_pdf_page_range(provider_name)
 
     def _build_batches(self, target_pages: list[int]) -> list[list[int]]:
         batch_size = self._settings.ocr_pdf_batch_pages

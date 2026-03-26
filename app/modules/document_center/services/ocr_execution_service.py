@@ -17,6 +17,13 @@ class OCRExecutionService:
         self._settings = settings
         self._adapters = adapters
 
+    def supports_pdf_page_range(self, provider_name: str | None = None) -> bool:
+        resolved_provider_name = provider_name or self._settings.ocr_default_provider
+        adapter = self._adapters.get(resolved_provider_name)
+        if adapter is None:
+            return False
+        return bool(getattr(adapter, "supports_pdf_page_range", False))
+
     def extract_text(
         self,
         *,
