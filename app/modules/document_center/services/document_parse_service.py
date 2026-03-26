@@ -20,6 +20,9 @@ from app.modules.document_center.schemas import DocumentParseRequest, DocumentPa
 from app.modules.document_center.services.file_identity_service import FileIdentityService
 from app.modules.document_center.services.ocr_execution_service import OCRExecutionService
 from app.modules.document_center.services.parse_cache_service import ParseCacheService
+from app.modules.document_center.services.pdf_ocr_batching_service import (
+    PDFOCRBatchingService,
+)
 from app.modules.document_center.services.parser_router_service import ParserRouterService
 
 
@@ -102,9 +105,13 @@ def build_document_parse_service(
         settings=document_parse_settings,
     )
     ocr_service = OCRExecutionService(settings=ocr_settings, adapters=adapters)
+    pdf_ocr_batching_service = PDFOCRBatchingService(ocr_settings)
     parser_router_service = ParserRouterService(
         [
-            PDFDocumentParser(ocr_service),
+            PDFDocumentParser(
+                ocr_service,
+                pdf_ocr_batching_service=pdf_ocr_batching_service,
+            ),
             ImageDocumentParser(ocr_service),
             DOCXDocumentParser(),
             XLSXDocumentParser(),

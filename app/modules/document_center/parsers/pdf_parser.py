@@ -10,6 +10,10 @@ from app.modules.document_center.schemas import (
     NormalizedDocumentAsset,
 )
 from app.modules.document_center.services.ocr_execution_service import OCRExecutionService
+from app.modules.document_center.services.pdf_ocr_batching_service import (
+    PDFOCRExecutionResult,
+    PDFOCRBatchingService,
+)
 from app.runtime.tools.schemas import OCRPage
 
 STREAM_PATTERN = re.compile(
@@ -25,8 +29,14 @@ class PDFDocumentParser(BaseDocumentParser):
     parser_name = "pdf_document_parser"
     supported_file_types = ("pdf",)
 
-    def __init__(self, ocr_service: OCRExecutionService) -> None:
+    def __init__(
+        self,
+        ocr_service: OCRExecutionService,
+        *,
+        pdf_ocr_batching_service: PDFOCRBatchingService | None = None,
+    ) -> None:
         self._ocr_service = ocr_service
+        self._pdf_ocr_batching_service = pdf_ocr_batching_service
 
     def parse(
         self,
@@ -51,12 +61,12 @@ class PDFDocumentParser(BaseDocumentParser):
                 metadata={"strategy": "text_layer"},
             )
 
-        response = self._ocr_service.extract_text(
+        execution = self._execute_pdf_ocr(
             request=request,
             asset=asset,
             trace_id=trace_id,
-            file_type="pdf",
         )
+        response = execution.response
         locations = [
             DocumentLocation(page_no=page.page_no)
             for page in response.pages
@@ -68,10 +78,46 @@ class PDFDocumentParser(BaseDocumentParser):
             text=response.text,
             pages=response.pages,
             locations=locations,
-            metadata={"usage": response.usage, "strategy": "ocr"},
+            metadata={
+                "usage": response.usage,
+                "strategy": "ocr",
+                "ocr_mode": execution.mode,
+                "ocr_batch_count": execution.batch_count,
+                "ocr_batch_page_ranges": execution.batch_page_ranges,
+                "ocr_total_pages": execution.total_pages,
+            },
             provider=response.provider,
             model=response.model,
             raw_response=response.raw_response,
+        )
+
+    def _execute_pdf_ocr(
+        self,
+        *,
+        request: DocumentParseRequest,
+        asset: NormalizedDocumentAsset,
+        trace_id: str,
+    ) -> PDFOCRExecutionResult:
+        if self._pdf_ocr_batching_service is None:
+            response = self._ocr_service.extract_text(
+                request=request,
+                asset=asset,
+                trace_id=trace_id,
+                file_type="pdf",
+            )
+            return PDFOCRExecutionResult(
+                response=response,
+                mode="single",
+                total_pages=None,
+                batch_count=1,
+                batch_page_ranges=[list(request.page_range)] if request.page_range else [],
+            )
+
+        return self._pdf_ocr_batching_service.extract_text(
+            request=request,
+            asset=asset,
+            trace_id=trace_id,
+            ocr_service=self._ocr_service,
         )
 
     def _extract_text_pages(self, content: bytes) -> list[OCRPage]:

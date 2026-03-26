@@ -17,14 +17,26 @@ from app.runtime.tools.schemas import OCRPage, OCRProviderResponse, OCRToolReque
 class FakeOCRAdapter(BaseOCRProviderAdapter):
     provider_name = "fake_ocr"
 
-    def __init__(self, response: OCRProviderResponse) -> None:
+    def __init__(
+        self,
+        response: OCRProviderResponse | None = None,
+        *,
+        response_builder=None,
+    ) -> None:
         self.response = response
+        self.response_builder = response_builder
         self.calls = 0
         self.last_request: OCRToolRequest | None = None
+        self.requests: list[OCRToolRequest] = []
 
     def extract_text(self, request: OCRToolRequest, *, trace_id: str) -> OCRProviderResponse:
         self.calls += 1
         self.last_request = request
+        self.requests.append(request)
+        if self.response_builder is not None:
+            return self.response_builder(request)
+        if self.response is None:
+            raise AssertionError("FakeOCRAdapter requires a response or response_builder.")
         return self.response
 
 
@@ -39,6 +51,9 @@ class DocumentParseServiceTestCase(unittest.TestCase):
             aliyun_ocr_app_code=None,
             internal_ocr_base_url=None,
             internal_ocr_api_key=None,
+            ocr_pdf_batch_enabled=True,
+            ocr_pdf_batch_pages=10,
+            ocr_pdf_batch_min_total_pages=11,
         )
         self.fake_ocr = FakeOCRAdapter(
             OCRProviderResponse(
@@ -115,6 +130,47 @@ class DocumentParseServiceTestCase(unittest.TestCase):
         self.assertEqual([location.page_no for location in result.locations], [1])
         self.assertEqual(self.fake_ocr.calls, 1)
 
+    def test_document_parse_service_batches_large_scanned_pdf_ocr_requests(self) -> None:
+        self.fake_ocr = FakeOCRAdapter(response_builder=self._build_dynamic_pdf_ocr_response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self._build_service(temp_dir)
+            pdf_path = Path(temp_dir) / "scanned.pdf"
+            pdf_path.write_bytes(self._build_scanned_pdf_bytes(page_count=23))
+
+            result = service.parse(
+                DocumentParseRequest(
+                    tenant_id="tenant-a",
+                    app_id="app-a",
+                    scene="knowledge_ingest",
+                    source_type="file_path",
+                    source_value=str(pdf_path),
+                )
+            )
+
+        self.assertEqual(self.fake_ocr.calls, 3)
+        self.assertEqual(
+            [request.page_range for request in self.fake_ocr.requests],
+            [
+                list(range(1, 11)),
+                list(range(11, 21)),
+                [21, 22, 23],
+            ],
+        )
+        self.assertEqual(result.metadata["strategy"], "ocr")
+        self.assertEqual(result.metadata["ocr_mode"], "batched")
+        self.assertEqual(result.metadata["ocr_batch_count"], 3)
+        self.assertEqual(result.metadata["ocr_total_pages"], 23)
+        self.assertEqual(
+            [page.page_no for page in result.pages],
+            list(range(1, 24)),
+        )
+        self.assertEqual(
+            [location.page_no for location in result.locations],
+            list(range(1, 24)),
+        )
+        self.assertIn("page 1", result.text)
+        self.assertIn("page 23", result.text)
+
     def test_document_parse_service_parses_docx_pptx_and_xlsx_locations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             service = self._build_service(temp_dir)
@@ -187,6 +243,24 @@ class DocumentParseServiceTestCase(unittest.TestCase):
         )
 
     @staticmethod
+    def _build_dynamic_pdf_ocr_response(request: OCRToolRequest) -> OCRProviderResponse:
+        page_range = request.page_range or [1]
+        pages = [
+            OCRPage(
+                page_no=index,
+                text=f"page {page_no}",
+            )
+            for index, page_no in enumerate(page_range, start=1)
+        ]
+        return OCRProviderResponse(
+            provider="fake_ocr",
+            model="ocr-v1",
+            text="\n\n".join(page.text for page in pages),
+            pages=pages,
+            usage={"pages": len(page_range), "requests": 1},
+        )
+
+    @staticmethod
     def _build_pdf_bytes(text: str) -> bytes:
         stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode("latin-1")
         compressed = zlib.compress(stream)
@@ -197,6 +271,19 @@ class DocumentParseServiceTestCase(unittest.TestCase):
             + b"stream\n"
             + compressed
             + b"\nendstream\nendobj\n%%EOF"
+        )
+
+    @staticmethod
+    def _build_scanned_pdf_bytes(page_count: int) -> bytes:
+        pages = b"".join(
+            f"{index + 2} 0 obj\n<< /Type /Page /Parent 1 0 R >>\nendobj\n".encode("ascii")
+            for index in range(page_count)
+        )
+        return (
+            b"%PDF-1.4\n"
+            + f"1 0 obj\n<< /Type /Pages /Count {page_count} >>\nendobj\n".encode("ascii")
+            + pages
+            + b"%%EOF"
         )
 
     @staticmethod

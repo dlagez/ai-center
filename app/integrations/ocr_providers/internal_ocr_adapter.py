@@ -50,13 +50,16 @@ class InternalOCRAdapter(BaseOCRProviderAdapter):
                 "Internal OCR provider requires a URL or base64 file payload."
             )
 
-        return {
+        payload = {
             "file": file_value,
             "fileType": 0 if request.file_type == "pdf" else 1,
             "format_block_content": True,
             "use_seal_recognition": True,
             "use_ocr_for_image_block": True,
         }
+        if request.page_range:
+            payload["pageRange"] = list(request.page_range)
+        return payload
 
     def _parse_layout_parsing_response(
         self,

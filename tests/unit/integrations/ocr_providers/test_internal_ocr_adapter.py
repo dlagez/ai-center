@@ -92,6 +92,30 @@ class InternalOCRAdapterTestCase(unittest.TestCase):
         self.assertEqual(result.text, "image text")
         self.assertEqual(mock_post.call_args.kwargs["payload"]["fileType"], 1)
 
+    def test_extract_text_includes_page_range_for_pdf(self) -> None:
+        adapter = InternalOCRAdapter(self.settings)
+        request = OCRToolRequest(
+            tenant_id="tenant-a",
+            app_id="app-a",
+            scene="knowledge_ingest",
+            source_type="base64",
+            source_value="ZmFrZS1wZGY=",
+            file_type="pdf",
+            page_range=[11, 12, 13],
+        )
+
+        with patch.object(
+            InternalOCRAdapter,
+            "post_json",
+            return_value={"result": {"layoutParsingResults": [{"markdown": {"text": "page"}}]}},
+        ) as mock_post:
+            adapter.extract_text(request, trace_id="trace-3")
+
+        self.assertEqual(
+            mock_post.call_args.kwargs["payload"]["pageRange"],
+            [11, 12, 13],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,9 @@ class OCRSettings:
     aliyun_ocr_app_code: str | None
     internal_ocr_base_url: str | None
     internal_ocr_api_key: str | None
+    ocr_pdf_batch_enabled: bool = True
+    ocr_pdf_batch_pages: int = 10
+    ocr_pdf_batch_min_total_pages: int = 11
 
     @classmethod
     def from_env(cls) -> "OCRSettings":
@@ -144,6 +147,11 @@ class OCRSettings:
             aliyun_ocr_app_code=_get_optional("ALIYUN_OCR_APP_CODE"),
             internal_ocr_base_url=_get_optional("INTERNAL_OCR_BASE_URL"),
             internal_ocr_api_key=_get_optional("INTERNAL_OCR_API_KEY"),
+            ocr_pdf_batch_enabled=_get_bool("OCR_PDF_BATCH_ENABLED", True),
+            ocr_pdf_batch_pages=_get_int("OCR_PDF_BATCH_PAGES", 10),
+            ocr_pdf_batch_min_total_pages=_get_int(
+                "OCR_PDF_BATCH_MIN_TOTAL_PAGES", 11
+            ),
         )
 
 
