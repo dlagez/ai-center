@@ -14,6 +14,9 @@ from app.core.exceptions import (
 from app.integrations.ocr_providers.aliyun_ocr_adapter import AliyunOCRAdapter
 from app.integrations.ocr_providers.base import BaseOCRProviderAdapter
 from app.integrations.ocr_providers.internal_ocr_adapter import InternalOCRAdapter
+from app.integrations.ocr_providers.internal_text_ocr_adapter import (
+    InternalTextOCRAdapter,
+)
 from app.modules.document_center.schemas import DocumentParseRequest
 from app.modules.document_center.services import (
     DocumentParseService,
@@ -189,6 +192,11 @@ def build_default_ocr_adapters(
         adapters["aliyun_ocr"] = AliyunOCRAdapter(settings)
     if settings.internal_ocr_base_url and "internal_ocr" not in adapters:
         adapters["internal_ocr"] = InternalOCRAdapter(settings)
+    if (
+        settings.internal_text_ocr_base_url
+        and "internal_text_ocr" not in adapters
+    ):
+        adapters["internal_text_ocr"] = InternalTextOCRAdapter(settings)
     return adapters
 
 

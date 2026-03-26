@@ -24,6 +24,24 @@ class OCRExecutionService:
             return False
         return bool(getattr(adapter, "supports_pdf_page_range", False))
 
+    def resolve_provider_name(self, request: DocumentParseRequest) -> str:
+        if request.provider:
+            return request.provider
+
+        if request.enable_layout is True or request.parse_mode == "structured":
+            return (
+                self._settings.ocr_default_layout_provider
+                or self._settings.ocr_default_provider
+            )
+
+        if request.parse_mode in {"text", "preview"}:
+            return (
+                self._settings.ocr_default_text_provider
+                or self._settings.ocr_default_provider
+            )
+
+        return self._settings.ocr_default_provider
+
     def extract_text(
         self,
         *,
@@ -32,7 +50,7 @@ class OCRExecutionService:
         trace_id: str,
         file_type: str,
     ) -> OCRProviderResponse:
-        provider_name = request.provider or self._settings.ocr_default_provider
+        provider_name = self.resolve_provider_name(request)
         adapter = self._adapters.get(provider_name)
         if adapter is None:
             raise OCRToolConfigurationError(
