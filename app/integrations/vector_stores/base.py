@@ -18,6 +18,9 @@ from app.runtime.retrieval.vector_store.schemas import (
 class BaseVectorStoreAdapter(ABC):
     provider_name: str
 
+    def close(self) -> None:
+        return None
+
     @abstractmethod
     def ensure_collection(
         self,

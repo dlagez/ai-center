@@ -61,6 +61,15 @@ class VectorStoreService:
     def recorder(self) -> InMemoryVectorStoreCallRecorder:
         return self._recorder
 
+    def close(self) -> None:
+        closed_adapters: set[int] = set()
+        for adapter in self._adapters.values():
+            adapter_id = id(adapter)
+            if adapter_id in closed_adapters:
+                continue
+            closed_adapters.add(adapter_id)
+            adapter.close()
+
     def describe_capabilities(self) -> VectorStoreCapabilities:
         return self._get_adapter().describe_capabilities()
 

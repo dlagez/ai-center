@@ -250,6 +250,19 @@ class RetrievalSettings:
 
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
+        default_query_logical_model = _get_optional("RETRIEVAL_QUERY_LOGICAL_MODEL")
+        if default_query_logical_model is None:
+            embedding_settings = EmbeddingSettings.from_env()
+            if (
+                not embedding_settings.embedding_enable_public_proxy
+                and embedding_settings.private_embedding_model
+                and embedding_settings.private_embedding_base_url
+            ):
+                default_query_logical_model = (
+                    embedding_settings.private_embedding_logical_model
+                )
+            else:
+                default_query_logical_model = "embedding_default"
         return cls(
             retrieval_default_top_k=_get_int("RETRIEVAL_DEFAULT_TOP_K", 10),
             retrieval_max_top_k=_get_int("RETRIEVAL_MAX_TOP_K", 50),
@@ -258,9 +271,7 @@ class RetrievalSettings:
             ),
             retrieval_timeout_ms=_get_int("RETRIEVAL_TIMEOUT_MS", 60000),
             retrieval_enable_hybrid=_get_bool("RETRIEVAL_ENABLE_HYBRID", False),
-            retrieval_query_logical_model=os.getenv(
-                "RETRIEVAL_QUERY_LOGICAL_MODEL", "embedding_default"
-            ),
+            retrieval_query_logical_model=default_query_logical_model,
         )
 
 

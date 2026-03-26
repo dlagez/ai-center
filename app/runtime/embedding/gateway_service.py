@@ -222,6 +222,13 @@ class EmbeddingGatewayService:
 def build_default_embedding_repository(
     settings: EmbeddingSettings,
 ) -> InMemoryModelConfigRepository:
+    has_private_embedding = bool(
+        settings.private_embedding_model and settings.private_embedding_base_url
+    )
+    effective_default_logical_model = settings.embedding_default_logical_model
+    if not settings.embedding_enable_public_proxy and has_private_embedding:
+        effective_default_logical_model = settings.private_embedding_logical_model
+
     catalog_entries = [
         ModelCatalogEntry(
             logical_model=settings.embedding_default_logical_model,
@@ -232,14 +239,15 @@ def build_default_embedding_repository(
             task_type="embedding",
             capability_tags=["embedding"],
             enabled=settings.embedding_enable_public_proxy,
-            is_default=True,
+            is_default=effective_default_logical_model
+            == settings.embedding_default_logical_model,
             timeout_ms=settings.embedding_timeout_ms,
             metadata={"batch_size": settings.embedding_batch_size},
         )
     ]
     route_policies = [
         ModelRoutePolicy(
-            logical_model=settings.embedding_default_logical_model,
+            logical_model=effective_default_logical_model,
             task_type="embedding",
             priority=100,
             enabled=True,
@@ -247,7 +255,7 @@ def build_default_embedding_repository(
     ]
     fallback_policies: list[ModelFallbackPolicy] = []
 
-    if settings.private_embedding_model and settings.private_embedding_base_url:
+    if has_private_embedding:
         catalog_entries.append(
             ModelCatalogEntry(
                 logical_model=settings.private_embedding_logical_model,
@@ -260,15 +268,17 @@ def build_default_embedding_repository(
                 task_type="embedding",
                 capability_tags=["embedding"],
                 enabled=True,
+                is_default=effective_default_logical_model
+                == settings.private_embedding_logical_model,
                 timeout_ms=settings.embedding_timeout_ms,
                 metadata={"batch_size": settings.embedding_batch_size},
             )
         )
 
     if (
-        settings.embedding_enable_direct_fallback
-        and settings.private_embedding_model
-        and settings.private_embedding_base_url
+        settings.embedding_enable_public_proxy
+        and has_private_embedding
+        and settings.embedding_enable_direct_fallback
     ):
         fallback_policies.append(
             ModelFallbackPolicy(

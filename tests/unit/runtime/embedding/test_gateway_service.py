@@ -298,6 +298,62 @@ class EmbeddingGatewayServiceTestCase(unittest.TestCase):
         self.assertEqual(len(result.items), 2)
         self.assertEqual(result.usage.total_tokens, 12)
 
+    def test_embed_uses_private_default_when_public_embedding_is_disabled(self) -> None:
+        recorder = InMemoryEmbeddingCallRecorder()
+        disabled_public_settings = EmbeddingSettings(
+            embedding_default_logical_model="embedding_default",
+            embedding_default_public_model="public-embedding-default",
+            embedding_timeout_ms=30000,
+            embedding_batch_size=16,
+            embedding_enable_public_proxy=False,
+            embedding_enable_direct_fallback=True,
+            private_embedding_base_url="http://private-embedding:8000",
+            private_embedding_api_key="private-key",
+            private_embedding_model="private-embedding-model",
+            private_embedding_logical_model="private_embedding_backup",
+        )
+        proxy_adapter = FakeEmbeddingAdapter()
+        private_adapter = FakeEmbeddingAdapter(
+            response=ProviderEmbeddingResponse(
+                provider="private_embedding",
+                model="private-embedding-model",
+                dimension=2,
+                items=[
+                    EmbeddedChunk(
+                        chunk_id="chunk-1",
+                        text="hello world",
+                        vector=[0.1, 0.2],
+                        dimension=2,
+                    ),
+                    EmbeddedChunk(
+                        chunk_id="chunk-2",
+                        text="second chunk",
+                        vector=[0.3, 0.4],
+                        dimension=2,
+                    ),
+                ],
+                usage=EmbeddingUsageInfo(prompt_tokens=10, total_tokens=10),
+            )
+        )
+        service = build_embedding_gateway_service(
+            embedding_settings=disabled_public_settings,
+            gateway_settings=self.gateway_settings,
+            adapters={
+                "litellm_proxy": proxy_adapter,
+                "direct": private_adapter,
+                "internal_proxy": private_adapter,
+            },
+            recorder=recorder,
+        )
+
+        result = service.embed(self.request)
+
+        self.assertEqual(result.final_channel, "direct")
+        self.assertEqual(result.final_provider, "private_embedding")
+        self.assertEqual(result.final_model, "private-embedding-model")
+        self.assertEqual(proxy_adapter.calls, 0)
+        self.assertEqual(private_adapter.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

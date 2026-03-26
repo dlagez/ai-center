@@ -265,6 +265,11 @@ class QdrantVectorStoreAdapter(BaseVectorStoreAdapter):
             supports_namespace=False,
         )
 
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+
     @property
     def _timeout_seconds(self) -> int:
         return max(1, math.ceil(self._settings.vector_store_timeout_ms / 1000))
