@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Iterator
+from typing import Any
 
 from app.core.config import GatewaySettings
 from app.core.exceptions import (
@@ -17,6 +18,11 @@ from app.modules.model_center.services.model_catalog_service import ModelCatalog
 from app.modules.model_center.services.model_policy_service import ModelPolicyService
 from app.modules.model_center.services.model_route_service import ModelRouteService
 from app.observability.metrics.llm_call_recorder import InMemoryLLMCallRecorder
+from app.observability.tracing import (
+    LangSmithTracer,
+    get_default_langsmith_tracer,
+    sanitize_messages,
+)
 from app.runtime.llm.error_mapper import ErrorMapper
 from app.runtime.llm.model_resolver import ModelResolver
 from app.runtime.llm.response_normalizer import ResponseNormalizer
@@ -49,6 +55,7 @@ class GatewayService:
         recorder: InMemoryLLMCallRecorder,
         error_mapper: ErrorMapper | None = None,
         normalizer: ResponseNormalizer | None = None,
+        tracer: LangSmithTracer | None = None,
     ) -> None:
         self._settings = settings
         self._resolver = resolver
@@ -56,104 +63,187 @@ class GatewayService:
         self._recorder = recorder
         self._error_mapper = error_mapper or ErrorMapper()
         self._normalizer = normalizer or ResponseNormalizer()
+        self._tracer = tracer or get_default_langsmith_tracer()
 
     def invoke_chat(self, request: LLMInvokeRequest) -> LLMInvokeResult:
         trace_id = self._new_trace_id()
-        primary_plan = self._resolver.resolve(request)
-        fallback_hops: list[FallbackHop] = []
+        with self._tracer.trace(
+            name="llm.invoke_chat",
+            run_type="llm",
+            scene=request.scene,
+            inputs=self._build_trace_inputs(request),
+            metadata={
+                "tenant_id": request.tenant_id,
+                "app_id": request.app_id,
+                "user_id": request.user_id,
+                "scene": request.scene,
+                "task_type": request.task_type,
+                "app_trace_id": trace_id,
+                **request.metadata,
+            },
+        ) as trace_run:
+            primary_plan = self._resolver.resolve(request)
+            fallback_hops: list[FallbackHop] = []
 
-        try:
-            response, latency_ms = self._invoke_plan(
-                plan=primary_plan, request=request, trace_id=trace_id
-            )
-            result = self._normalizer.normalize(
-                trace_id=trace_id,
-                logical_model=primary_plan.logical_model,
-                final_channel=primary_plan.channel,
-                response=response,
-                latency_ms=latency_ms,
-                fallback_hops=fallback_hops,
-            )
-            self._recorder.record_success(request, result)
-            return result
-        except Exception as exc:
-            primary_error = self._error_mapper.to_gateway_error(exc)
+            try:
+                response, latency_ms = self._invoke_plan(
+                    plan=primary_plan, request=request, trace_id=trace_id
+                )
+                result = self._normalizer.normalize(
+                    trace_id=trace_id,
+                    logical_model=primary_plan.logical_model,
+                    final_channel=primary_plan.channel,
+                    response=response,
+                    latency_ms=latency_ms,
+                    fallback_hops=fallback_hops,
+                )
+                self._recorder.record_success(request, result)
+                trace_run.metadata.update(
+                    {
+                        "logical_model": result.logical_model,
+                        "final_channel": result.final_channel,
+                        "final_provider": result.final_provider,
+                        "final_model": result.final_model,
+                        "fallback_count": len(result.fallback_hops),
+                    }
+                )
+                trace_run.end(outputs=self._build_trace_outputs(result))
+                return result
+            except Exception as exc:
+                primary_error = self._error_mapper.to_gateway_error(exc)
 
-        fallback_plan = self._resolve_fallback_plan(
-            primary_plan=primary_plan,
-            request=request,
-            error=primary_error,
-        )
-        if fallback_plan is None:
-            self._recorder.record_failure(
+            fallback_plan = self._resolve_fallback_plan(
+                primary_plan=primary_plan,
                 request=request,
-                trace_id=trace_id,
-                plan=primary_plan,
                 error=primary_error,
-                fallback_count=0,
             )
-            raise primary_error
+            if fallback_plan is None:
+                trace_run.metadata.update({"error_code": primary_error.code})
+                self._recorder.record_failure(
+                    request=request,
+                    trace_id=trace_id,
+                    plan=primary_plan,
+                    error=primary_error,
+                    fallback_count=0,
+                )
+                raise primary_error
 
-        fallback_hops.append(
-            FallbackHop(
-                source_logical_model=primary_plan.logical_model,
-                target_logical_model=fallback_plan.logical_model,
-                target_channel=fallback_plan.channel,
-                reason=primary_error.code,
+            fallback_hops.append(
+                FallbackHop(
+                    source_logical_model=primary_plan.logical_model,
+                    target_logical_model=fallback_plan.logical_model,
+                    target_channel=fallback_plan.channel,
+                    reason=primary_error.code,
+                )
             )
-        )
-        try:
-            response, latency_ms = self._invoke_plan(
-                plan=fallback_plan, request=request, trace_id=trace_id
-            )
-            result = self._normalizer.normalize(
-                trace_id=trace_id,
-                logical_model=primary_plan.logical_model,
-                final_channel=fallback_plan.channel,
-                response=response,
-                latency_ms=latency_ms,
-                fallback_hops=fallback_hops,
-            )
-            self._recorder.record_success(request, result)
-            return result
-        except Exception as exc:
-            fallback_error = self._error_mapper.to_gateway_error(exc)
-            self._recorder.record_failure(
-                request=request,
-                trace_id=trace_id,
-                plan=fallback_plan,
-                error=fallback_error,
-                fallback_count=len(fallback_hops),
-            )
-            raise fallback_error
+            try:
+                response, latency_ms = self._invoke_plan(
+                    plan=fallback_plan, request=request, trace_id=trace_id
+                )
+                result = self._normalizer.normalize(
+                    trace_id=trace_id,
+                    logical_model=primary_plan.logical_model,
+                    final_channel=fallback_plan.channel,
+                    response=response,
+                    latency_ms=latency_ms,
+                    fallback_hops=fallback_hops,
+                )
+                self._recorder.record_success(request, result)
+                trace_run.metadata.update(
+                    {
+                        "logical_model": result.logical_model,
+                        "final_channel": result.final_channel,
+                        "final_provider": result.final_provider,
+                        "final_model": result.final_model,
+                        "fallback_count": len(result.fallback_hops),
+                    }
+                )
+                trace_run.end(outputs=self._build_trace_outputs(result))
+                return result
+            except Exception as exc:
+                fallback_error = self._error_mapper.to_gateway_error(exc)
+                trace_run.metadata.update({"error_code": fallback_error.code})
+                self._recorder.record_failure(
+                    request=request,
+                    trace_id=trace_id,
+                    plan=fallback_plan,
+                    error=fallback_error,
+                    fallback_count=len(fallback_hops),
+                )
+                raise fallback_error
 
     def stream_chat(self, request: LLMInvokeRequest) -> Iterator[LLMStreamChunk]:
         trace_id = self._new_trace_id()
         primary_plan = self._resolver.resolve(request)
 
         def stream() -> Iterator[LLMStreamChunk]:
+            chunk_count = 0
             fallback_hops: list[FallbackHop] = []
             first_yield_emitted = False
-            try:
-                adapter = self._get_adapter(primary_plan.channel)
-                for chunk in adapter.stream(
-                    plan=primary_plan, request=request, trace_id=trace_id
-                ):
-                    first_yield_emitted = True
-                    yield chunk
-                self._recorder.record_stream_success(
+            with self._tracer.trace(
+                name="llm.stream_chat",
+                run_type="llm",
+                scene=request.scene,
+                inputs=self._build_trace_inputs(request),
+                metadata={
+                    "tenant_id": request.tenant_id,
+                    "app_id": request.app_id,
+                    "user_id": request.user_id,
+                    "scene": request.scene,
+                    "task_type": request.task_type,
+                    "app_trace_id": trace_id,
+                    "stream": True,
+                    **request.metadata,
+                },
+            ) as trace_run:
+                try:
+                    adapter = self._get_adapter(primary_plan.channel)
+                    for chunk in adapter.stream(
+                        plan=primary_plan, request=request, trace_id=trace_id
+                    ):
+                        first_yield_emitted = True
+                        chunk_count += 1
+                        yield chunk
+                    self._recorder.record_stream_success(
+                        request=request,
+                        trace_id=trace_id,
+                        logical_model=primary_plan.logical_model,
+                        final_channel=primary_plan.channel,
+                        final_provider=primary_plan.provider,
+                        final_model=primary_plan.target_model_name,
+                        fallback_count=0,
+                    )
+                    trace_run.metadata.update(
+                        {
+                            "logical_model": primary_plan.logical_model,
+                            "final_channel": primary_plan.channel,
+                            "final_provider": primary_plan.provider,
+                            "final_model": primary_plan.target_model_name,
+                            "fallback_count": 0,
+                        }
+                    )
+                    trace_run.end(outputs={"chunk_count": chunk_count, "stream": True})
+                    return
+                except Exception as exc:
+                    error = self._error_mapper.to_gateway_error(exc)
+                    if first_yield_emitted:
+                        trace_run.metadata.update({"error_code": error.code})
+                        self._recorder.record_failure(
+                            request=request,
+                            trace_id=trace_id,
+                            plan=primary_plan,
+                            error=error,
+                            fallback_count=0,
+                        )
+                        raise error
+
+                fallback_plan = self._resolve_fallback_plan(
+                    primary_plan=primary_plan,
                     request=request,
-                    trace_id=trace_id,
-                    logical_model=primary_plan.logical_model,
-                    final_channel=primary_plan.channel,
-                    final_provider=primary_plan.provider,
-                    final_model=primary_plan.target_model_name,
-                    fallback_count=0,
+                    error=error,
                 )
-                return
-            except Exception as exc:
-                error = self._error_mapper.to_gateway_error(exc)
-                if first_yield_emitted:
+                if fallback_plan is None:
+                    trace_run.metadata.update({"error_code": error.code})
                     self._recorder.record_failure(
                         request=request,
                         trace_id=trace_id,
@@ -163,54 +253,53 @@ class GatewayService:
                     )
                     raise error
 
-            fallback_plan = self._resolve_fallback_plan(
-                primary_plan=primary_plan,
-                request=request,
-                error=error,
-            )
-            if fallback_plan is None:
-                self._recorder.record_failure(
-                    request=request,
-                    trace_id=trace_id,
-                    plan=primary_plan,
-                    error=error,
-                    fallback_count=0,
+                fallback_hops.append(
+                    FallbackHop(
+                        source_logical_model=primary_plan.logical_model,
+                        target_logical_model=fallback_plan.logical_model,
+                        target_channel=fallback_plan.channel,
+                        reason=error.code,
+                    )
                 )
-                raise error
-
-            fallback_hops.append(
-                FallbackHop(
-                    source_logical_model=primary_plan.logical_model,
-                    target_logical_model=fallback_plan.logical_model,
-                    target_channel=fallback_plan.channel,
-                    reason=error.code,
-                )
-            )
-            try:
-                adapter = self._get_adapter(fallback_plan.channel)
-                for chunk in adapter.stream(
-                    plan=fallback_plan, request=request, trace_id=trace_id
-                ):
-                    yield chunk
-                self._recorder.record_stream_success(
-                    request=request,
-                    trace_id=trace_id,
-                    logical_model=primary_plan.logical_model,
-                    final_channel=fallback_plan.channel,
-                    final_provider=fallback_plan.provider,
-                    final_model=fallback_plan.target_model_name,
-                    fallback_count=len(fallback_hops),
-                )
-            except Exception as exc:
-                fallback_error = self._error_mapper.to_gateway_error(exc)
-                self._recorder.record_failure(
-                    request=request,
-                    trace_id=trace_id,
-                    plan=fallback_plan,
-                    error=fallback_error,
-                    fallback_count=len(fallback_hops),
-                )
-                raise fallback_error
+                try:
+                    adapter = self._get_adapter(fallback_plan.channel)
+                    for chunk in adapter.stream(
+                        plan=fallback_plan, request=request, trace_id=trace_id
+                    ):
+                        chunk_count += 1
+                        yield chunk
+                    self._recorder.record_stream_success(
+                        request=request,
+                        trace_id=trace_id,
+                        logical_model=primary_plan.logical_model,
+                        final_channel=fallback_plan.channel,
+                        final_provider=fallback_plan.provider,
+                        final_model=fallback_plan.target_model_name,
+                        fallback_count=len(fallback_hops),
+                    )
+                    trace_run.metadata.update(
+                        {
+                            "logical_model": primary_plan.logical_model,
+                            "final_channel": fallback_plan.channel,
+                            "final_provider": fallback_plan.provider,
+                            "final_model": fallback_plan.target_model_name,
+                            "fallback_count": len(fallback_hops),
+                        }
+                    )
+                    trace_run.end(
+                        outputs={"chunk_count": chunk_count, "stream": True}
+                    )
+                except Exception as exc:
+                    fallback_error = self._error_mapper.to_gateway_error(exc)
+                    trace_run.metadata.update({"error_code": fallback_error.code})
+                    self._recorder.record_failure(
+                        request=request,
+                        trace_id=trace_id,
+                        plan=fallback_plan,
+                        error=fallback_error,
+                        fallback_count=len(fallback_hops),
+                    )
+                    raise fallback_error
 
         return stream()
 
@@ -267,6 +356,45 @@ class GatewayService:
     def _new_trace_id() -> str:
         return uuid.uuid4().hex
 
+    def _build_trace_inputs(self, request: LLMInvokeRequest) -> dict[str, Any]:
+        return {
+            "tenant_id": request.tenant_id,
+            "app_id": request.app_id,
+            "user_id": request.user_id,
+            "scene": request.scene,
+            "task_type": request.task_type,
+            "logical_model": request.logical_model,
+            "messages": sanitize_messages(
+                request.messages,
+                capture_content=self._tracer.capture_prompts(),
+                max_text_chars=self._tracer.settings.app_langsmith_max_text_chars,
+                redact_pii=self._tracer.settings.app_langsmith_redact_pii,
+            ),
+            "tools": request.tools,
+            "response_format": request.response_format,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+        }
+
+    @staticmethod
+    def _build_trace_outputs(result: LLMInvokeResult) -> dict[str, Any]:
+        return {
+            "trace_id": result.trace_id,
+            "logical_model": result.logical_model,
+            "final_channel": result.final_channel,
+            "final_provider": result.final_provider,
+            "final_model": result.final_model,
+            "content": result.content,
+            "finish_reason": result.finish_reason,
+            "tool_calls": result.tool_calls,
+            "usage": result.usage.model_dump(mode="json"),
+            "cost": result.cost,
+            "latency_ms": result.latency_ms,
+            "fallback_hops": [
+                hop.model_dump(mode="json") for hop in result.fallback_hops
+            ],
+        }
+
 
 def build_gateway_service(
     *,
@@ -274,6 +402,7 @@ def build_gateway_service(
     repository: InMemoryModelConfigRepository | None = None,
     adapters: dict[str, BaseModelProviderAdapter] | None = None,
     recorder: InMemoryLLMCallRecorder | None = None,
+    tracer: LangSmithTracer | None = None,
 ) -> GatewayService:
     settings = settings or GatewaySettings.from_env()
     repository = repository or InMemoryModelConfigRepository.from_settings(settings)
@@ -297,4 +426,5 @@ def build_gateway_service(
         resolver=resolver,
         adapters=adapters,
         recorder=recorder,
+        tracer=tracer,
     )

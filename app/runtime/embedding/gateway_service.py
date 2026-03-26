@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import Any
 
 from app.core.config import EmbeddingSettings, GatewaySettings
 from app.core.exceptions import EmbeddingConfigurationError, EmbeddingError
@@ -21,6 +22,10 @@ from app.modules.model_center.schemas import (
 from app.modules.model_center.services.model_policy_service import ModelPolicyService
 from app.observability.metrics.embedding_call_recorder import (
     InMemoryEmbeddingCallRecorder,
+)
+from app.observability.tracing import (
+    LangSmithTracer,
+    get_default_langsmith_tracer,
 )
 from app.runtime.embedding.error_mapper import EmbeddingErrorMapper
 from app.runtime.embedding.resolver import EmbeddingModelResolver
@@ -52,6 +57,7 @@ class EmbeddingGatewayService:
         recorder: InMemoryEmbeddingCallRecorder,
         error_mapper: EmbeddingErrorMapper | None = None,
         normalizer: EmbeddingResponseNormalizer | None = None,
+        tracer: LangSmithTracer | None = None,
     ) -> None:
         self._settings = settings
         self._resolver = resolver
@@ -59,83 +65,119 @@ class EmbeddingGatewayService:
         self._recorder = recorder
         self._error_mapper = error_mapper or EmbeddingErrorMapper()
         self._normalizer = normalizer or EmbeddingResponseNormalizer()
+        self._tracer = tracer or get_default_langsmith_tracer()
 
     def embed(self, request: EmbeddingBatchRequest) -> EmbeddingBatchResult:
         if not request.items:
             raise EmbeddingConfigurationError("Embedding request items must not be empty.")
 
         trace_id = uuid.uuid4().hex
-        primary_plan = self._resolver.resolve(request)
-        fallback_hops: list[EmbeddingFallbackHop] = []
+        with self._tracer.trace(
+            name=self._trace_name_for_request(request),
+            run_type="embedding",
+            scene=request.scene,
+            inputs=self._build_trace_inputs(request),
+            metadata={
+                "tenant_id": request.tenant_id,
+                "app_id": request.app_id,
+                "scene": request.scene,
+                "app_trace_id": trace_id,
+                **request.metadata,
+            },
+        ) as trace_run:
+            primary_plan = self._resolver.resolve(request)
+            fallback_hops: list[EmbeddingFallbackHop] = []
 
-        try:
-            response, latency_ms = self._embed_plan(
-                plan=primary_plan,
-                request=request,
-                trace_id=trace_id,
-            )
-            result = self._normalizer.normalize(
-                trace_id=trace_id,
-                logical_model=primary_plan.logical_model,
-                final_channel=primary_plan.channel,
-                response=response,
-                latency_ms=latency_ms,
-                fallback_hops=fallback_hops,
-            )
-            self._recorder.record_success(request, result)
-            return result
-        except Exception as exc:
-            primary_error = self._error_mapper.to_embedding_error(exc)
+            try:
+                response, latency_ms = self._embed_plan(
+                    plan=primary_plan,
+                    request=request,
+                    trace_id=trace_id,
+                )
+                result = self._normalizer.normalize(
+                    trace_id=trace_id,
+                    logical_model=primary_plan.logical_model,
+                    final_channel=primary_plan.channel,
+                    response=response,
+                    latency_ms=latency_ms,
+                    fallback_hops=fallback_hops,
+                )
+                self._recorder.record_success(request, result)
+                trace_run.metadata.update(
+                    {
+                        "logical_model": result.logical_model,
+                        "final_channel": result.final_channel,
+                        "final_provider": result.final_provider,
+                        "final_model": result.final_model,
+                        "fallback_count": len(result.fallback_hops),
+                    }
+                )
+                trace_run.end(outputs=self._build_trace_outputs(result))
+                return result
+            except Exception as exc:
+                primary_error = self._error_mapper.to_embedding_error(exc)
 
-        fallback_plan = self._resolve_fallback_plan(
-            primary_plan=primary_plan,
-            request=request,
-            error=primary_error,
-        )
-        if fallback_plan is None:
-            self._recorder.record_failure(
+            fallback_plan = self._resolve_fallback_plan(
+                primary_plan=primary_plan,
                 request=request,
-                trace_id=trace_id,
-                plan=primary_plan,
                 error=primary_error,
-                fallback_count=0,
             )
-            raise primary_error
+            if fallback_plan is None:
+                trace_run.metadata.update({"error_code": primary_error.code})
+                self._recorder.record_failure(
+                    request=request,
+                    trace_id=trace_id,
+                    plan=primary_plan,
+                    error=primary_error,
+                    fallback_count=0,
+                )
+                raise primary_error
 
-        fallback_hops.append(
-            EmbeddingFallbackHop(
-                source_logical_model=primary_plan.logical_model,
-                target_logical_model=fallback_plan.logical_model,
-                target_channel=fallback_plan.channel,
-                reason=primary_error.code,
+            fallback_hops.append(
+                EmbeddingFallbackHop(
+                    source_logical_model=primary_plan.logical_model,
+                    target_logical_model=fallback_plan.logical_model,
+                    target_channel=fallback_plan.channel,
+                    reason=primary_error.code,
+                )
             )
-        )
-        try:
-            response, latency_ms = self._embed_plan(
-                plan=fallback_plan,
-                request=request,
-                trace_id=trace_id,
-            )
-            result = self._normalizer.normalize(
-                trace_id=trace_id,
-                logical_model=primary_plan.logical_model,
-                final_channel=fallback_plan.channel,
-                response=response,
-                latency_ms=latency_ms,
-                fallback_hops=fallback_hops,
-            )
-            self._recorder.record_success(request, result)
-            return result
-        except Exception as exc:
-            fallback_error = self._error_mapper.to_embedding_error(exc)
-            self._recorder.record_failure(
-                request=request,
-                trace_id=trace_id,
-                plan=fallback_plan,
-                error=fallback_error,
-                fallback_count=len(fallback_hops),
-            )
-            raise fallback_error
+            try:
+                response, latency_ms = self._embed_plan(
+                    plan=fallback_plan,
+                    request=request,
+                    trace_id=trace_id,
+                )
+                result = self._normalizer.normalize(
+                    trace_id=trace_id,
+                    logical_model=primary_plan.logical_model,
+                    final_channel=fallback_plan.channel,
+                    response=response,
+                    latency_ms=latency_ms,
+                    fallback_hops=fallback_hops,
+                )
+                self._recorder.record_success(request, result)
+                trace_run.metadata.update(
+                    {
+                        "logical_model": result.logical_model,
+                        "final_channel": result.final_channel,
+                        "final_provider": result.final_provider,
+                        "final_model": result.final_model,
+                        "fallback_count": len(result.fallback_hops),
+                    }
+                )
+                trace_run.end(outputs=self._build_trace_outputs(result))
+                return result
+            except Exception as exc:
+                fallback_error = self._error_mapper.to_embedding_error(exc)
+                trace_run.metadata.update({"error_code": fallback_error.code})
+                self._recorder.record_failure(
+                    request=request,
+                    trace_id=trace_id,
+                    plan=fallback_plan,
+                    error=fallback_error,
+                    fallback_count=len(fallback_hops),
+                )
+                raise fallback_error
 
     def _embed_plan(
         self,
@@ -217,6 +259,48 @@ class EmbeddingGatewayService:
             },
             raw_response={"batches": raw_response} if raw_response else None,
         )
+
+    def _trace_name_for_request(self, request: EmbeddingBatchRequest) -> str:
+        if request.metadata.get("retrieval_trace_id") or request.scene == "knowledge_retrieval":
+            return "embedding.query"
+        if request.metadata.get("knowledge_index_trace_id") or request.scene == "knowledge_index":
+            return "embedding.index"
+        return "embedding.embed"
+
+    def _build_trace_inputs(self, request: EmbeddingBatchRequest) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        for item in request.items[:5]:
+            preview: dict[str, Any] = {"chunk_id": item.chunk_id}
+            if self._tracer.capture_prompts():
+                preview["text"] = item.text
+            if item.metadata:
+                preview["metadata"] = dict(item.metadata)
+            items.append(preview)
+        return {
+            "tenant_id": request.tenant_id,
+            "app_id": request.app_id,
+            "scene": request.scene,
+            "logical_model": request.logical_model,
+            "item_count": len(request.items),
+            "items": items,
+        }
+
+    @staticmethod
+    def _build_trace_outputs(result: EmbeddingBatchResult) -> dict[str, Any]:
+        return {
+            "trace_id": result.trace_id,
+            "logical_model": result.logical_model,
+            "final_channel": result.final_channel,
+            "final_provider": result.final_provider,
+            "final_model": result.final_model,
+            "dimension": result.dimension,
+            "item_count": len(result.items),
+            "usage": result.usage.model_dump(mode="json"),
+            "latency_ms": result.latency_ms,
+            "fallback_hops": [
+                hop.model_dump(mode="json") for hop in result.fallback_hops
+            ],
+        }
 
 
 def build_default_embedding_repository(
@@ -303,6 +387,7 @@ def build_embedding_gateway_service(
     repository: InMemoryModelConfigRepository | None = None,
     adapters: dict[str, BaseEmbeddingProviderAdapter] | None = None,
     recorder: InMemoryEmbeddingCallRecorder | None = None,
+    tracer: LangSmithTracer | None = None,
 ) -> EmbeddingGatewayService:
     embedding_settings = embedding_settings or EmbeddingSettings.from_env()
     gateway_settings = gateway_settings or GatewaySettings.from_env()
@@ -324,4 +409,5 @@ def build_embedding_gateway_service(
         resolver=resolver,
         adapters=adapters,
         recorder=recorder,
+        tracer=tracer,
     )

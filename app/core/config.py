@@ -327,3 +327,61 @@ class VectorStoreSettings:
             qdrant_prefer_grpc=_get_bool("QDRANT_PREFER_GRPC", False),
             qdrant_https=_get_bool("QDRANT_HTTPS", False),
         )
+
+
+@dataclass(frozen=True)
+class LangSmithSettings:
+    langsmith_tracing: bool
+    langsmith_api_key: str | None
+    langsmith_endpoint: str
+    langsmith_project: str
+    langsmith_workspace_id: str | None
+    app_langsmith_enabled: bool
+    app_langsmith_project_rag: str
+    app_langsmith_project_ingest: str
+    app_langsmith_project_eval: str
+    app_langsmith_sample_rate: float
+    app_langsmith_max_text_chars: int
+    app_langsmith_capture_retrieved_text: bool
+    app_langsmith_capture_prompts: bool
+    app_langsmith_redact_pii: bool
+    app_langsmith_otel_enabled: bool
+    app_langsmith_otel_only: bool
+
+    @classmethod
+    def from_env(cls) -> "LangSmithSettings":
+        default_project = os.getenv("LANGSMITH_PROJECT", "default")
+        return cls(
+            langsmith_tracing=_get_bool("LANGSMITH_TRACING", False),
+            langsmith_api_key=_get_optional("LANGSMITH_API_KEY"),
+            langsmith_endpoint=os.getenv(
+                "LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"
+            ),
+            langsmith_project=default_project,
+            langsmith_workspace_id=_get_optional("LANGSMITH_WORKSPACE_ID"),
+            app_langsmith_enabled=_get_bool("APP_LANGSMITH_ENABLED", False),
+            app_langsmith_project_rag=os.getenv(
+                "APP_LANGSMITH_PROJECT_RAG", default_project
+            ),
+            app_langsmith_project_ingest=os.getenv(
+                "APP_LANGSMITH_PROJECT_INGEST", default_project
+            ),
+            app_langsmith_project_eval=os.getenv(
+                "APP_LANGSMITH_PROJECT_EVAL", default_project
+            ),
+            app_langsmith_sample_rate=_get_float("APP_LANGSMITH_SAMPLE_RATE", 1.0),
+            app_langsmith_max_text_chars=_get_int(
+                "APP_LANGSMITH_MAX_TEXT_CHARS", 4000
+            ),
+            app_langsmith_capture_retrieved_text=_get_bool(
+                "APP_LANGSMITH_CAPTURE_RETRIEVED_TEXT", True
+            ),
+            app_langsmith_capture_prompts=_get_bool(
+                "APP_LANGSMITH_CAPTURE_PROMPTS", True
+            ),
+            app_langsmith_redact_pii=_get_bool("APP_LANGSMITH_REDACT_PII", False),
+            app_langsmith_otel_enabled=_get_bool(
+                "APP_LANGSMITH_OTEL_ENABLED", False
+            ),
+            app_langsmith_otel_only=_get_bool("APP_LANGSMITH_OTEL_ONLY", False),
+        )

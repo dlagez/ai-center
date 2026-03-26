@@ -18,6 +18,11 @@ from app.core.exceptions import (
 from app.observability.metrics.retrieval_call_recorder import (
     InMemoryRetrievalCallRecorder,
 )
+from app.observability.tracing import (
+    LangSmithTracer,
+    get_default_langsmith_tracer,
+    summarize_hits,
+)
 from app.runtime.embedding.gateway_service import (
     EmbeddingGatewayService,
     build_embedding_gateway_service,
@@ -46,11 +51,16 @@ class RetrieverService:
         filter_builder: RetrievalFilterBuilder | None = None,
         error_mapper: RetrievalErrorMapper | None = None,
         normalizer: RetrievalResultNormalizer | None = None,
+        tracer: LangSmithTracer | None = None,
     ) -> None:
         self._settings = settings or RetrievalSettings.from_env()
-        self._embedding_service = embedding_service or build_embedding_gateway_service()
+        self._tracer = tracer or get_default_langsmith_tracer()
+        self._embedding_service = embedding_service or build_embedding_gateway_service(
+            tracer=self._tracer
+        )
         self._vector_store_service = (
-            vector_store_service or build_default_vector_store_service()
+            vector_store_service
+            or build_default_vector_store_service(tracer=self._tracer)
         )
         self._recorder = recorder or InMemoryRetrievalCallRecorder()
         self._filter_builder = filter_builder or RetrievalFilterBuilder()
@@ -65,54 +75,83 @@ class RetrieverService:
         trace_id = uuid.uuid4().hex
         retrieval_strategy = "vector_search"
         normalized_request = self._normalize_request(request)
-        start_time = time.perf_counter()
+        with self._tracer.trace(
+            name="retrieval.retrieve",
+            run_type="retriever",
+            scene=normalized_request.scene,
+            pipeline_kind="rag",
+            inputs=self._build_trace_inputs(normalized_request),
+            metadata={
+                "tenant_id": normalized_request.tenant_id,
+                "app_id": normalized_request.app_id,
+                "knowledge_base_id": normalized_request.knowledge_base_id,
+                "index_name": normalized_request.index_name,
+                "index_version": normalized_request.index_version,
+                "app_trace_id": trace_id,
+                "retrieval_strategy": retrieval_strategy,
+                **normalized_request.metadata,
+            },
+        ) as trace_run:
+            start_time = time.perf_counter()
 
-        try:
-            filters = self._filter_builder.build(normalized_request)
-            embedding_result = self._embedding_service.embed(
-                self._build_embedding_request(normalized_request, trace_id=trace_id)
-            )
-            query_vector = self._extract_query_vector(embedding_result.items)
-            vector_result = self._vector_store_service.query_vectors(
-                self._build_vector_query_request(
-                    normalized_request,
-                    filters=filters,
-                    query_vector=query_vector,
-                    trace_id=trace_id,
+            try:
+                filters = self._filter_builder.build(normalized_request)
+                embedding_result = self._embedding_service.embed(
+                    self._build_embedding_request(normalized_request, trace_id=trace_id)
                 )
-            )
-            hits, post_process_debug = self._post_process_hits(
-                normalized_request,
-                raw_hits=vector_result.hits,
-            )
-            latency_ms = int((time.perf_counter() - start_time) * 1000)
-            result = self._normalizer.normalize(
-                trace_id=trace_id,
-                request=normalized_request,
-                hits=hits,
-                latency_ms=latency_ms,
-                retrieval_strategy=retrieval_strategy,
-                debug_info={
-                    "embedding_trace_id": embedding_result.trace_id,
-                    "vector_store_trace_id": vector_result.trace_id,
-                    "query_vector_dimension": len(query_vector),
-                    "candidate_count": len(vector_result.hits),
-                    "filter_keys": sorted(filters.keys()),
-                    "store_provider": vector_result.provider,
-                    **post_process_debug,
-                },
-            )
-            self._recorder.record_success(normalized_request, result)
-            return result
-        except Exception as exc:
-            error = self._error_mapper.to_retrieval_error(exc)
-            self._recorder.record_failure(
-                request=normalized_request,
-                trace_id=trace_id,
-                retrieval_strategy=retrieval_strategy,
-                error=error,
-            )
-            raise error
+                query_vector = self._extract_query_vector(embedding_result.items)
+                vector_result = self._vector_store_service.query_vectors(
+                    self._build_vector_query_request(
+                        normalized_request,
+                        filters=filters,
+                        query_vector=query_vector,
+                        trace_id=trace_id,
+                    )
+                )
+                hits, post_process_debug = self._post_process_hits(
+                    normalized_request,
+                    raw_hits=vector_result.hits,
+                )
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
+                result = self._normalizer.normalize(
+                    trace_id=trace_id,
+                    request=normalized_request,
+                    hits=hits,
+                    latency_ms=latency_ms,
+                    retrieval_strategy=retrieval_strategy,
+                    debug_info={
+                        "embedding_trace_id": embedding_result.trace_id,
+                        "vector_store_trace_id": vector_result.trace_id,
+                        "query_vector_dimension": len(query_vector),
+                        "candidate_count": len(vector_result.hits),
+                        "filter_keys": sorted(filters.keys()),
+                        "store_provider": vector_result.provider,
+                        **post_process_debug,
+                    },
+                )
+                self._recorder.record_success(normalized_request, result)
+                trace_run.metadata.update(
+                    {
+                        "embedding_trace_id": embedding_result.trace_id,
+                        "vector_store_trace_id": vector_result.trace_id,
+                        "query_vector_dimension": len(query_vector),
+                        "candidate_count": len(vector_result.hits),
+                        "filter_keys": sorted(filters.keys()),
+                        "store_provider": vector_result.provider,
+                    }
+                )
+                trace_run.end(outputs=self._build_trace_outputs(result))
+                return result
+            except Exception as exc:
+                error = self._error_mapper.to_retrieval_error(exc)
+                trace_run.metadata.update({"error_code": error.code})
+                self._recorder.record_failure(
+                    request=normalized_request,
+                    trace_id=trace_id,
+                    retrieval_strategy=retrieval_strategy,
+                    error=error,
+                )
+                raise error
 
     def _normalize_request(self, request: RetrievalRequest) -> RetrievalRequest:
         query = (request.query or "").strip()
@@ -304,6 +343,37 @@ class RetrieverService:
                 extracted[key] = value
         return extracted
 
+    def _build_trace_inputs(self, request: RetrievalRequest) -> dict[str, Any]:
+        return {
+            "tenant_id": request.tenant_id,
+            "app_id": request.app_id,
+            "knowledge_base_id": request.knowledge_base_id,
+            "index_name": request.index_name,
+            "index_version": request.index_version,
+            "query": request.query,
+            "top_k": request.top_k,
+            "score_threshold": request.score_threshold,
+            "document_ids": list(request.document_ids),
+            "filters": dict(request.filters),
+            "query_logical_model": request.query_logical_model,
+        }
+
+    def _build_trace_outputs(self, result: RetrievalResult) -> dict[str, Any]:
+        return {
+            "trace_id": result.trace_id,
+            "query": result.query,
+            "total_hits": result.total_hits,
+            "latency_ms": result.latency_ms,
+            "retrieval_strategy": result.retrieval_strategy,
+            "hits": summarize_hits(
+                result.hits,
+                capture_text=self._tracer.capture_retrieved_text(),
+                max_text_chars=self._tracer.settings.app_langsmith_max_text_chars,
+                redact_pii=self._tracer.settings.app_langsmith_redact_pii,
+            ),
+            "debug_info": dict(result.debug_info),
+        }
+
 
 def build_default_retriever_service(
     *,
@@ -314,6 +384,7 @@ def build_default_retriever_service(
     embedding_service: EmbeddingGatewayService | None = None,
     vector_store_service: VectorStoreService | None = None,
     recorder: InMemoryRetrievalCallRecorder | None = None,
+    tracer: LangSmithTracer | None = None,
 ) -> RetrieverService:
     return RetrieverService(
         settings=retrieval_settings,
@@ -321,8 +392,13 @@ def build_default_retriever_service(
         or build_embedding_gateway_service(
             embedding_settings=embedding_settings,
             gateway_settings=gateway_settings,
+            tracer=tracer,
         ),
         vector_store_service=vector_store_service
-        or build_default_vector_store_service(settings=vector_store_settings),
+        or build_default_vector_store_service(
+            settings=vector_store_settings,
+            tracer=tracer,
+        ),
         recorder=recorder,
+        tracer=tracer,
     )

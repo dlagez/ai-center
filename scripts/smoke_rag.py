@@ -19,6 +19,7 @@ from app.modules.knowledge_center import (  # noqa: E402
     build_knowledge_index_service,
     build_simple_rag_service,
 )
+from app.observability.tracing import get_default_langsmith_tracer  # noqa: E402
 from app.runtime.retrieval import build_default_retriever_service  # noqa: E402
 from app.runtime.retrieval.vector_store.service import (  # noqa: E402
     build_default_vector_store_service,
@@ -204,6 +205,7 @@ def run_smoke(args: argparse.Namespace) -> tuple[Any, Any]:
         return ingest_result, rag_result
     finally:
         vector_store_service.close()
+        get_default_langsmith_tracer().flush()
 
 
 def resolve_source(args: argparse.Namespace) -> tuple[str, str, str | None]:
